@@ -52,14 +52,14 @@ async function encodeFrames(dir, spec, audioPath) {
   const hasAudio = audioPath && fs.existsSync(audioPath) && fs.statSync(audioPath).size > 44;
   if (hasAudio) args.push("-i", audioPath);
   if (spec.format === "webm") {
-    args.push("-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "8", "-row-mt", "1", "-crf", "32", "-b:v", "0", "-pix_fmt", "yuv420p");
-    if (hasAudio) args.push("-c:a", "libopus", "-b:a", "128k", "-shortest");
+    args.push("-c:v", "libvpx-vp9", "-deadline", "good", "-cpu-used", "4", "-row-mt", "1", "-crf", "24", "-b:v", "0", "-pix_fmt", "yuv420p");
+    if (hasAudio) args.push("-c:a", "libopus", "-b:a", "192k", "-shortest");
   } else {
-    args.push(...(await encoderArgs({ preset: "superfast" })));
-    if (hasAudio) args.push("-c:a", "aac", "-b:a", "160k", "-shortest");
+    args.push(...(await encoderArgs({ preset: "faster", crf: 17 })), "-g", String(spec.fps * 2), "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709");
+    if (hasAudio) args.push("-c:a", "aac", "-b:a", "192k", "-shortest");
     args.push("-movflags", "+faststart");
   }
-  args.push("-s", `${Math.round(spec.width / 2) * 2}x${Math.round(spec.height / 2) * 2}`, out);
+  args.push("-vsync", "cfr", "-s", `${Math.round(spec.width / 2) * 2}x${Math.round(spec.height / 2) * 2}`, out);
   const r = await run("ffmpeg", args, { timeout: 0 });
   if (r.code !== 0 || !fs.existsSync(out)) {
     return { err: r.stderr.split("\n").filter(Boolean).slice(-2).join(" ") || "FFmpeg failed" };
@@ -311,7 +311,7 @@ function buildClipLayoutFilter(inPad, outPad, idx, layout, width, height, fps) {
     return (
       `[${inPad}]split=2[bg${idx}][fg${idx}];` +
       `[bg${idx}]scale=135:240:force_original_aspect_ratio=increase:flags=fast_bilinear,crop=135:240,boxblur=4:1,eq=brightness=-0.15,scale=${width}:${height}:flags=bilinear[bgo${idx}];` +
-      `[fg${idx}]scale=${fgW}:${fgH}:force_original_aspect_ratio=decrease:flags=bilinear[fgo${idx}];` +
+      `[fg${idx}]scale=${fgW}:${fgH}:force_original_aspect_ratio=decrease:flags=lanczos[fgo${idx}];` +
       `[bgo${idx}][fgo${idx}]overlay=${ox}:${oy},setsar=1,fps=${fps}[${outPad}]`
     );
   }
@@ -328,8 +328,9 @@ function buildClipLayoutFilter(inPad, outPad, idx, layout, width, height, fps) {
     return (
       `[${inPad}]split=2[cam${idx}][main${idx}];` +
       `[cam${idx}]crop='max(2,trunc(iw*${fw}/2)*2)':'max(2,trunc(ih*${fh}/2)*2)':'max(0,min(iw-ow,trunc(iw*${fx})))':'max(0,min(ih-oh,trunc(ih*${fy})))',` +
-      `scale='trunc(max(${width},iw*${camH}/ih)/2)*2':'trunc(max(${camH},ih*${width}/iw)/2)*2':flags=fast_bilinear,crop=${width}:${camH},drawbox=x=0:y=0:w=${width}:h=2:color=black@0.6:t=fill,setsar=1[camo${idx}];` +
-      `[main${idx}]scale='trunc(max(${width}*${z},iw*${mainH}*${z}/ih)/2)*2':'trunc(max(${mainH}*${z},ih*${width}*${z}/iw)/2)*2':flags=fast_bilinear,` +
+      `scale='trunc(max(${width},iw*${camH}/ih)/2)*2':'trunc(max(${camH},ih*${width}/iw)/2)*2':flags=lanczos,crop=${width}:${camH},drawbox=x=0:y=0:w=${width}:h=2:color=black@0.6:t=fill,setsar=1[camo${idx}];` +
+      `[main${idx}]scale='trunc(max(${width}*${z},iw*${mainH}*${z}/ih)/2)*2':'trunc(max(${mainH}*${z},ih*${width}*${z}/iw)/2)*2':flags=lanczos,` +
+      `pad='max(iw,${width})':'max(ih,${mainH})':(ow-iw)/2:(oh-ih)/2:black,` +
       `crop=${width}:${mainH}:'max(0,min(iw-${width},(iw-${width})/2+(${px.toFixed(4)})*(iw-${width})/2))':'max(0,min(ih-${mainH},(ih-${mainH})/2+(${py.toFixed(4)})*(ih-${mainH})/2))',setsar=1[maino${idx}];` +
       `[maino${idx}][camo${idx}]vstack=inputs=2,setsar=1,fps=${fps}[${outPad}]`
     );
@@ -337,10 +338,11 @@ function buildClipLayoutFilter(inPad, outPad, idx, layout, width, height, fps) {
 
   // Default: fill
   if (Math.abs(z - 1) < 0.001 && Math.abs(px) < 0.001 && Math.abs(py) < 0.001) {
-    return `[${inPad}]scale=${width}:${height}:force_original_aspect_ratio=increase:flags=fast_bilinear,crop=${width}:${height}:(iw-${width})/2:(ih-${height})/2,setsar=1,fps=${fps}[${outPad}]`;
+    return `[${inPad}]scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${width}:${height}:(iw-${width})/2:(ih-${height})/2,setsar=1,fps=${fps}[${outPad}]`;
   }
   return (
-    `[${inPad}]scale='trunc(max(${width}*${z},iw*${height}*${z}/ih)/2)*2':'trunc(max(${height}*${z},ih*${width}*${z}/iw)/2)*2':flags=fast_bilinear,` +
+    `[${inPad}]scale='trunc(max(${width}*${z},iw*${height}*${z}/ih)/2)*2':'trunc(max(${height}*${z},ih*${width}*${z}/iw)/2)*2':flags=lanczos,` +
+    `pad='max(iw,${width})':'max(ih,${height})':(ow-iw)/2:(oh-ih)/2:black,` +
     `crop=${width}:${height}:'max(0,min(iw-${width},(iw-${width})/2+(${px.toFixed(4)})*(iw-${width})/2))':'max(0,min(ih-${height},(ih-${height})/2+(${py.toFixed(4)})*(ih-${height})/2))',setsar=1,fps=${fps}[${outPad}]`
   );
 }
@@ -451,12 +453,28 @@ async function prepareNativeFfmpegRun(dir, project, mediaFiles, { width, height,
   }
 
   const out = path.join(dir, `out.${format}`);
-  args.push("-filter_complex", filters.join(";"), "-map", `[${videoPad}]`, "-map", `[${audioPad}]`, "-r", String(fps));
+  args.push("-filter_complex", filters.join(";"), "-map", `[${videoPad}]`, "-map", `[${audioPad}]`, "-r", String(fps), "-vsync", "cfr");
 
   if (format === "webm") {
-    args.push("-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "8", "-row-mt", "1", "-crf", "32", "-b:v", "0", "-c:a", "libopus", "-b:a", "128k");
+    args.push("-c:v", "libvpx-vp9", "-deadline", "good", "-cpu-used", "4", "-row-mt", "1", "-crf", "24", "-b:v", "0", "-c:a", "libopus", "-b:a", "192k");
   } else {
-    args.push(...(await encoderArgs({ preset: "superfast" })), "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart");
+    args.push(
+      ...(await encoderArgs({ preset: "faster", crf: 17 })),
+      "-g",
+      String(fps * 2),
+      "-colorspace",
+      "bt709",
+      "-color_primaries",
+      "bt709",
+      "-color_trc",
+      "bt709",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "192k",
+      "-movflags",
+      "+faststart",
+    );
   }
   args.push("-t", totalDuration.toFixed(3), out);
 

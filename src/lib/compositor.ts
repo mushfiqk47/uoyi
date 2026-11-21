@@ -36,12 +36,28 @@ function drawCover(
 ) {
   const [sx, sy, sw, sh] = src;
   const [dx, dy, dw, dh] = box;
+  if (sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) return;
   const scale = Math.max(dw / sw, dh / sh) * zoom;
   const cw = dw / scale;
   const ch = dh / scale;
-  const cx = sx + (sw - cw) / 2 + ((sw - cw) / 2) * panX;
-  const cy = sy + (sh - ch) / 2 + ((sh - ch) / 2) * panY;
-  ctx.drawImage(v, cx, cy, cw, ch, dx, dy, dw, dh);
+  const rawCx = sx + (sw - cw) / 2 + ((sw - cw) / 2) * panX;
+  const rawCy = sy + (sh - ch) / 2 + ((sh - ch) / 2) * panY;
+  const [vw, vh] = sourceSize(v);
+  const sLeft = Math.max(0, sx, rawCx);
+  const sTop = Math.max(0, sy, rawCy);
+  const sRight = Math.min(vw, sx + sw, rawCx + cw);
+  const sBottom = Math.min(vh, sy + sh, rawCy + ch);
+  if (sRight <= sLeft || sBottom <= sTop) return;
+  const dLeft = dx + (sLeft - rawCx) * scale;
+  const dTop = dy + (sTop - rawCy) * scale;
+  const dWidth = (sRight - sLeft) * scale;
+  const dHeight = (sBottom - sTop) * scale;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(dx, dy, dw, dh);
+  ctx.clip();
+  ctx.drawImage(v, sLeft, sTop, sRight - sLeft, sBottom - sTop, dLeft, dTop, dWidth, dHeight);
+  ctx.restore();
 }
 
 function drawContain(ctx: CanvasRenderingContext2D, v: Visual, W: number, H: number, zoom: number, panX: number, panY: number) {
@@ -362,6 +378,10 @@ function drawBlurredBackdrop(ctx: CanvasRenderingContext2D, v: Visual, sw: numbe
     blurCanvas.height = BLUR_H;
     blurCtx = blurCanvas.getContext("2d", { alpha: false });
   }
+  if (blurCtx) {
+    blurCtx.imageSmoothingEnabled = true;
+    blurCtx.imageSmoothingQuality = "high";
+  }
   if (!blurCtx) {
     ctx.save();
     ctx.filter = "blur(28px) brightness(0.55)";
@@ -379,6 +399,8 @@ function drawBlurredBackdrop(ctx: CanvasRenderingContext2D, v: Visual, sw: numbe
 export function drawFrame(ctx: CanvasRenderingContext2D, W: number, H: number, f: FrameInput): void {
   const { project: p, time } = f;
   ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, W, H);
   const a = activeClipAt(p, time);

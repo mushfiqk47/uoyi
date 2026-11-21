@@ -3,7 +3,7 @@ import type { Settings } from "./settings";
 import { uid } from "./util";
 
 export const DEFAULT_LAYOUT: Layout = {
-  mode: "fill",
+  mode: "split",
   zoom: 1,
   panX: 0,
   panY: 0,

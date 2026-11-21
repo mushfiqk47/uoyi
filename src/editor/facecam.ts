@@ -53,7 +53,18 @@ export async function detectFacecam(
   };
 }
 
-/** Applies a detected facecam box and switches the project to the split layout. */
+/** True when a facecam rectangle still matches the uncustomized default placeholder. */
+export function isDefaultFacecamRect(rect: Rect, def: Rect): boolean {
+  const eps = 1e-4;
+  return (
+    Math.abs(rect.x - def.x) < eps &&
+    Math.abs(rect.y - def.y) < eps &&
+    Math.abs(rect.w - def.w) < eps &&
+    Math.abs(rect.h - def.h) < eps
+  );
+}
+
+/** Applies a detected facecam box and ensures the project uses the split layout. */
 export function applyFacecam(editLayout: (patch: Partial<Layout>, key: string) => void, rect: Rect): void {
   editLayout({ facecam: rect, mode: "split" }, "facecam-ai");
 }
@@ -65,9 +76,14 @@ export async function waitForReadyVisual(project: Project, player: Player, timeo
     if (stop()) return null;
     const a = activeClipAt(project, player.clock.time) ?? (project.video[0] ? { clip: project.video[0] } : null);
     const v = a ? player.pool.visuals.get(a.clip.mediaId) : undefined;
-    const w = v instanceof HTMLVideoElement ? v.videoWidth : v instanceof HTMLImageElement ? v.naturalWidth : 0;
-    if (v && w > 0) return { clipId: a!.clip.id, mediaId: a!.clip.mediaId };
-    await new Promise((r) => setTimeout(r, 400));
+    const ready =
+      v instanceof HTMLVideoElement
+        ? v.readyState >= 2 && !v.seeking && v.videoWidth > 0 && v.videoHeight > 0
+        : v instanceof HTMLImageElement
+          ? v.complete && v.naturalWidth > 0 && v.naturalHeight > 0
+          : false;
+    if (ready && a) return { clipId: a.clip.id, mediaId: a.clip.mediaId };
+    await new Promise((r) => setTimeout(r, 200));
   }
   return null;
 }

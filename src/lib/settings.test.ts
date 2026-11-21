@@ -89,4 +89,24 @@ describe("hassle-free recording defaults", () => {
     store.set("clipkit.settings.v1", JSON.stringify({ fileNamePattern: "{title}-{date}-{time}" }));
     expect(loadSettings().fileNamePattern).toBe("{title}-{date}-{time}");
   });
+
+  it("defaults layout to Facecam + game (split) and migrates legacy fill once", () => {
+    expect(DEFAULT_SETTINGS.defaultLayout).toBe("split");
+    store.set("clipkit.settings.v1", JSON.stringify({ defaultLayout: "fill" }));
+    expect(loadSettings().defaultLayout).toBe("split");
+    // Second load after migration respects user switching back to fill
+    store.set("clipkit.settings.v1", JSON.stringify({ defaultLayout: "fill" }));
+    expect(loadSettings().defaultLayout).toBe("fill");
+    store.clear();
+    store.set("clipkit.settings.v1", JSON.stringify({ defaultLayout: "fit" }));
+    expect(loadSettings().defaultLayout).toBe("fit");
+  });
+
+  it("enables auto facecam detection by default and supports 30-120 fps export", () => {
+    expect(DEFAULT_SETTINGS.autoFacecamOnOpen).toBe(true);
+    store.set("clipkit.settings.v1", JSON.stringify({ exportFps: 120 }));
+    expect(loadSettings().exportFps).toBe(120);
+    store.set("clipkit.settings.v1", JSON.stringify({ exportFps: 75 }));
+    expect(loadSettings().exportFps).toBe(60);
+  });
 });

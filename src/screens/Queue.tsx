@@ -163,7 +163,7 @@ const JobCard = memo(function JobCard({ job, first, last }: { job: QueueJob; fir
           <b>{job.title}</b>
           <small className="muted">
             {job.status === "queued" && (queuePaused ? "Paused · waiting" : `Waiting · ${fmtTime(job.duration)} long`)}
-            {job.status === "rendering" && `Rendering · ${job.fps} fps · ${fmtDuration(job.remaining)} left`}
+            {job.status === "rendering" && `Rendering${job.fps > 0 ? ` · ${job.fps} fps` : ""} · ${fmtDuration(job.remaining)} left`}
             {job.status === "paused" && `Paused at ${Math.floor(job.progress * 100)}%`}
             {job.status === "done" && `${fmtWhen(job.finishedAt ?? Date.now())} · ${fmtTime(job.duration)} · ${fmtBytes(job.size)} · ${ext.toUpperCase()}${job.autoSaved ? ` · ${job.autoSaved === "folder" ? "Saved to folder" : "Downloaded"}` : ""}`}
             {job.status === "failed" && (job.failure ?? "Failed")}

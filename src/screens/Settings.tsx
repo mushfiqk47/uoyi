@@ -305,15 +305,15 @@ function EditorDefaults() {
             options={[
               { value: "fill", label: "Fill" },
               { value: "fit", label: "Fit" },
-              { value: "split", label: "Facecam" },
+              { value: "split", label: "Facecam + game" },
             ]}
           />
         </SettingRow>
         <SettingRow title="Auto 9:16 Fit in Editor" desc="Open every clip with the vertical 9:16 frame and Fit layout already applied, zoom reset to 1×.">
           <Switch label="Auto 9:16 Fit in Editor" checked={settings.autoFitOnOpen} onChange={(autoFitOnOpen) => updateSettings({ autoFitOnOpen })} />
         </SettingRow>
-        <SettingRow title="Auto face + game detection" desc="When the Editor opens a clip, detect the facecam automatically and switch to the split layout — game on top, facecam below. Needs OpenCV Python or a Gemini key; Frame → Detect with AI retries manually.">
-          <Switch label="Auto face + game detection" checked={settings.autoFacecamOnOpen} onChange={(autoFacecamOnOpen) => updateSettings({ autoFacecamOnOpen })} />
+        <SettingRow title="Auto face detection" desc="Automatically detect and frame the facecam in Facecam + game mode (on by default). Drag or resize the Facecam box in Frame anytime to adjust manually.">
+          <Switch label="Auto face detection" checked={settings.autoFacecamOnOpen} onChange={(autoFacecamOnOpen) => updateSettings({ autoFacecamOnOpen })} />
         </SettingRow>
         <SettingRow title="Caption font">
           <Seg
@@ -602,10 +602,10 @@ function Export() {
           ]}
         />
       </SettingRow>
-      <SettingRow title="Frame rate" desc="Frames are drawn and recorded in this tab. Recording runs in real time, so rates above your screen's refresh rate won't add real frames.">
-        <Seg<S["exportFps"]> label="Frame rate" value={settings.exportFps} onChange={(exportFps) => updateSettings({ exportFps })} options={[{ value: 30, label: "30 fps" }, { value: 60, label: "60 fps" }, { value: 90, label: "90 fps" }]} />
+      <SettingRow title="Frame rate" desc="Export frame rate (30–120 fps). Native FFmpeg renders cleanly at any selected rate so fast gameplay stays smooth.">
+        <Seg<S["exportFps"]> label="Frame rate" value={settings.exportFps} onChange={(exportFps) => updateSettings({ exportFps })} options={[{ value: 30, label: "30 fps" }, { value: 60, label: "60 fps" }, { value: 90, label: "90 fps" }, { value: 120, label: "120 fps" }]} />
       </SettingRow>
-      <SettingRow title="Format" desc="MP4 if this browser can record it, WebM otherwise. WebM is smaller.">
+      <SettingRow title="Format" desc="MP4 uses hardware/H.264 when FFmpeg is available, or browser encoding otherwise. WebM is smaller.">
         <Seg<S["exportFormat"]>
           label="Format"
           value={settings.exportFormat}
@@ -616,8 +616,8 @@ function Export() {
       <SettingRow title="File name" desc={`Use {title}, {date} and {time}. Next file: “${fileNameFor(settings.fileNamePattern, "Big Buck Bunny")}”`}>
         <input className="input" value={settings.fileNamePattern} maxLength={80} onChange={(e) => updateSettings({ fileNamePattern: e.target.value })} aria-label="File name pattern" />
       </SettingRow>
-      <SettingRow title="Browser render (real time)" desc="Rendering happens in this tab with the browser's MediaRecorder while the timeline plays once. Keep the tab open and in front until jobs finish.">
-        <span className="muted" style={{ fontSize: 12.5 }}>Enabled</span>
+      <SettingRow title="Render engine" desc="Uses fast server FFmpeg by default (up to 120 fps, sharp Lanczos scaling), falling back to in-browser rendering automatically if FFmpeg is unavailable.">
+        <span className="muted" style={{ fontSize: 12.5 }}>FFmpeg + Browser</span>
       </SettingRow>
       <SettingRow title="Name before rendering" desc="Ask for a name each time you press Render.">
         <Switch label="Name before rendering" checked={settings.nameBeforeRender} onChange={(nameBeforeRender) => updateSettings({ nameBeforeRender })} />

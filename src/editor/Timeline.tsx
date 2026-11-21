@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as RPointerEvent, type KeyboardEvent as RKeyboardEvent } from "react";
-import { Captions, Film, Image as ImageIcon, Music, Scissors, Sparkles, Trash2, Type, ZoomIn, ZoomOut } from "lucide-react";
+import { Captions, Film, Image as ImageIcon, Music, Scissors, Trash2, Type, ZoomIn, ZoomOut } from "lucide-react";
 import type { Project } from "../lib/types";
 import { activeClipAt, clipLength, clipStarts } from "../lib/project";
 import { useStore } from "../store";
@@ -43,8 +43,6 @@ export function Timeline({
   onSplit,
   onDelete,
   onAddText,
-  onDetectAi,
-  detectingAi = false,
 }: {
   project: Project;
   player: Player;
@@ -53,8 +51,6 @@ export function Timeline({
   onSplit: () => void;
   onDelete?: () => void;
   onAddText?: () => void;
-  onDetectAi?: () => void;
-  detectingAi?: boolean;
 }) {
   const { editProject } = useStore();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -142,16 +138,6 @@ export function Timeline({
           </button>
         </div>
         <div className="timeline-tools-right">
-          {onDetectAi && (
-            <button
-              className="btn ghost sm"
-              onClick={onDetectAi}
-              disabled={detectingAi || project.video.length === 0}
-              title="Auto-detect streamer facecam with AI"
-            >
-              <Sparkles className="ic" /> {detectingAi ? "Detecting…" : "Detect AI"}
-            </button>
-          )}
           {targetVideo && (
             <label className="timeline-speed">
               <span className="timeline-speed-label">Speed</span>

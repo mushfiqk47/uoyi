@@ -35,8 +35,8 @@ export interface Player {
   seek(t: number): void;
 }
 
-export const PREVIEW_W = 540;
-export const PREVIEW_H = 960;
+export const PREVIEW_W = 720;
+export const PREVIEW_H = 1280;
 
 export function usePlayer(project: Project): Player {
   const clockRef = useRef<Clock>(null as unknown as Clock);
@@ -46,49 +46,77 @@ export function usePlayer(project: Project): Player {
   poolRef.current ??= new MediaPool();
   const pool = poolRef.current;
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
   const projectRef = useRef(project);
   projectRef.current = project;
   const duration = projectDuration(project);
   const durationRef = useRef(duration);
   durationRef.current = duration;
   const forceSync = useRef(true);
+  const wakeRef = useRef<() => void>(() => {});
 
   useEffect(() => {
-    pool.ensure(project.media).then(() => (forceSync.current = true));
+    pool.ensure(project.media).then(() => {
+      forceSync.current = true;
+      wakeRef.current();
+    });
   }, [project.media, pool]);
+
+  useEffect(() => {
+    wakeRef.current();
+  }, [project]);
 
   useEffect(() => () => pool.dispose(), [pool]);
 
   useEffect(() => {
     let raf = 0;
     let last = performance.now();
-    let lastEmit = 0;
-    // Redraw only when something actually changed. Repainting an identical paused frame every
-    // rAF churned the canvas (clear + full redraw at 60fps) and could race a frame that had
-    // just finished loading, showing a stale or blank picture — reads as flicker while scrubbing.
+    // Redraw only when something actually changed, and stop scheduling rAF once paused and
+    // settled so an idle editor uses zero background CPU/GPU frames.
     let drawnProject: Project | null = null;
     let drawnAt = -1;
-    let wasReady = true;
+    let wasReady = false;
+    let active = false;
+
+    const schedule = () => {
+      if (active) return;
+      active = true;
+      last = performance.now();
+      raf = requestAnimationFrame(loop);
+    };
+    wakeRef.current = schedule;
+
     const loop = (now: number) => {
+      active = false;
       const dt = Math.min(0.1, (now - last) / 1000);
       last = now;
       const p = projectRef.current;
       const d = durationRef.current;
+      let stateChanged = false;
       if (clock.playing) {
         clock.time += dt;
+        stateChanged = true;
         if (clock.time >= d) {
           clock.time = d;
           clock.playing = false;
         }
       }
-      if (clock.time > d) clock.time = d;
+      if (clock.time > d) {
+        clock.time = d;
+        stateChanged = true;
+      }
       const moved = pool.sync(p, clock.time, clock.playing, forceSync.current);
       const forced = forceSync.current;
       forceSync.current = false;
+
       const c = canvasRef.current;
-      const ctx = c?.getContext("2d");
+      if (c && (!ctxRef.current || ctxRef.current.canvas !== c)) {
+        ctxRef.current = c.getContext("2d", { alpha: false });
+      }
+      const ctx = ctxRef.current;
+      let ready = true;
       if (c && ctx) {
-        const ready = frameReady(p, clock.time, pool.visuals);
+        ready = frameReady(p, clock.time, pool.visuals);
         if (ready && (clock.playing || moved || forced || !wasReady || clock.time !== drawnAt || p !== drawnProject)) {
           drawFrame(ctx, c.width, c.height, { project: p, time: clock.time, duration: d, visuals: pool.visuals });
           drawnProject = p;
@@ -96,14 +124,18 @@ export function usePlayer(project: Project): Player {
         }
         wasReady = ready;
       }
-      if (clock.playing || now - lastEmit > 250) {
-        lastEmit = now;
+      if (stateChanged || moved || forced) {
         clock.emit();
       }
-      raf = requestAnimationFrame(loop);
+      // Keep running while playing, while a seeked video frame is still decoding, or while a sync changed state.
+      if (clock.playing || !ready || moved || forced) {
+        schedule();
+      }
     };
-    raf = requestAnimationFrame(loop);
+
+    schedule();
     return () => {
+      active = false;
       cancelAnimationFrame(raf);
       pool.pauseAll();
     };
@@ -114,6 +146,7 @@ export function usePlayer(project: Project): Player {
     clock.playing = true;
     forceSync.current = true;
     clock.emit();
+    wakeRef.current();
   }, [clock]);
 
   const pause = useCallback(() => {
@@ -131,6 +164,7 @@ export function usePlayer(project: Project): Player {
       clock.time = Math.max(0, Math.min(durationRef.current, t));
       forceSync.current = true;
       clock.emit();
+      wakeRef.current();
     },
     [clock],
   );

@@ -141,8 +141,8 @@ async function encoderArgs(opts) {
     }
   }
   return nvenc
-    ? ["-c:v", "h264_nvenc", "-preset", "p3", "-cq", "23", "-pix_fmt", "yuv420p"]
-    : ["-c:v", "libx264", "-preset", opts?.preset || "superfast", "-crf", "21", "-threads", "0", "-pix_fmt", "yuv420p"];
+    ? ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "18", "-rc", "vbr", "-b:v", "0", "-maxrate", "28M", "-bufsize", "56M", "-pix_fmt", "yuv420p"]
+    : ["-c:v", "libx264", "-preset", opts?.preset || "faster", "-crf", String(opts?.crf ?? 17), "-threads", "0", "-pix_fmt", "yuv420p"];
 }
 
 /** True once detection has run and found NVENC. `null` (not probed yet) reports false. */

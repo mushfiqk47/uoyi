@@ -41,13 +41,13 @@ export interface Settings {
   phone: PhoneStyle;
   defaultTemplateId: string | null;
   exportHeight: 720 | 1080;
-  exportFps: 30 | 60 | 90;
+  exportFps: 30 | 60 | 90 | 120;
   exportFormat: "webm" | "mp4";
   /** Save each finished render straight to a folder picked once in Settings → Rendering. */
   autoDownloadRenders: boolean;
   /** Open clips in the Editor with the 9:16 frame and Fit layout already applied. */
   autoFitOnOpen: boolean;
-  /** Detect the facecam when the Editor opens and switch to the facecam + game split layout. */
+  /** Automatically detect the facecam when using the Facecam + game layout (on by default). */
   autoFacecamOnOpen: boolean;
   fileNamePattern: string;
   nameBeforeRender: boolean;
@@ -111,7 +111,7 @@ export const DEFAULT_SETTINGS: Settings = {
   recordSaveSeconds: 900,
   recordQuality: "fullhd",
   afterClip: "stay",
-  defaultLayout: "fill",
+  defaultLayout: "split",
   defaultOverlay: "off",
   defaultCaptionFont: "bebas",
   phone: "iphone",
@@ -212,6 +212,13 @@ export function loadSettings(): Settings {
   delete (loaded as Partial<Record<"recordSaveMinutes", unknown>>).recordSaveMinutes;
   loaded.recordSaveSeconds = Math.min(14400, Math.max(30, Math.round(Number(loaded.recordSaveSeconds) || 900)));
   if (loaded.recordQuality !== "smooth" && loaded.recordQuality !== "fullhd") loaded.recordQuality = "fullhd";
+  // Default layout shifted to Facecam + game (split) for streamer/gaming clips.
+  once(MIGRATIONS.defaultLayoutSplit, () => {
+    if (loaded.defaultLayout === "fill") loaded.defaultLayout = "split";
+  });
+  if (loaded.exportFps !== 30 && loaded.exportFps !== 60 && loaded.exportFps !== 90 && loaded.exportFps !== 120) {
+    loaded.exportFps = 60;
+  }
   // Render filenames dropped the date; only the shipped default is rewritten, custom patterns stay.
   if (loaded.fileNamePattern === "{title} {date}") loaded.fileNamePattern = "{title}";
   return loaded;

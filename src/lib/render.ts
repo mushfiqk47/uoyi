@@ -12,7 +12,7 @@ import { hintForMotion, pickMime } from "./recorder";
 
 export interface RenderOptions {
   height: 720 | 1080;
-  fps: 30 | 60 | 90;
+  fps: 30 | 60 | 90 | 120;
   format: "webm" | "mp4";
   onWarning?: (message: string) => void;
 }
@@ -32,8 +32,14 @@ export interface RenderHandle {
 
 export class RenderCancelled extends Error {}
 
-const MAX_NATIVE_UPLOAD_BYTES = 450 * 1024 * 1024;
+const MAX_NATIVE_UPLOAD_BYTES = 1024 * 1024 * 1024;
 let cachedFfmpegHealth: { ok: boolean; at: number } | null = null;
+
+export function renderBitrate(height: 720 | 1080, fps: 30 | 60 | 90 | 120): number {
+  const base = height >= 1080 ? 10_000_000 : 5_500_000;
+  const mult = fps <= 30 ? 1 : fps <= 60 ? 1.6 : fps <= 90 ? 2.1 : 2.6;
+  return Math.round(base * mult);
+}
 
 async function hasServerFfmpeg(): Promise<boolean> {
   const now = Date.now();
@@ -137,7 +143,7 @@ async function tryNativeFfmpegRender(
     req.upload.onprogress = (e) => {
       if (aborted || state.cancelled || !e.lengthComputable) return;
       const frac = e.total > 0 ? e.loaded / e.total : 0;
-      onProgress({ progress: Math.min(0.15, frac * 0.15), fps: opts.fps, remaining: duration });
+      onProgress({ progress: Math.min(0.15, frac * 0.15), fps: 0, remaining: duration });
     };
     req.onload = () => {
       xhr = null;
@@ -172,7 +178,7 @@ async function tryNativeFfmpegRender(
     if (st.status === "done") break;
     onProgress({
       progress: Math.min(0.97, 0.15 + (Number(st.progress) || 0) * 0.82),
-      fps: Number(st.fps) || opts.fps,
+      fps: Number(st.fps) || 0,
       remaining: Math.max(0, Number(st.remaining) || 0),
     });
     await new Promise((r) => setTimeout(r, 220));
@@ -201,6 +207,8 @@ export function startRender(p: Project, opts: RenderOptions, onProgress: (r: Ren
   let cancelled = false;
   let rec: MediaRecorder | null = null;
   let raf = 0;
+  let timer = 0;
+  let resetLastOnResume = false;
   let nativeAbort: (() => void) | null = null;
   let pool: MediaPool | null = null;
   let audioCtx: AudioContext | null = null;
@@ -247,9 +255,23 @@ export function startRender(p: Project, opts: RenderOptions, onProgress: (r: Ren
 
       const mime = mimeFor(opts.format);
       if (!mime) throw new Error("This browser can't record video");
-      const stream = new MediaStream([...canvas.captureStream(opts.fps).getVideoTracks(), ...dest.stream.getAudioTracks()]);
+
+      type CanvasTrack = MediaStreamTrack & { requestFrame?: () => void };
+      const manualStream = canvas.captureStream(0);
+      let vTrack = manualStream.getVideoTracks()[0] as CanvasTrack | undefined;
+      const manualFrame = typeof vTrack?.requestFrame === "function";
+      if (!manualFrame) {
+        manualStream.getTracks().forEach((tr) => tr.stop());
+        vTrack = canvas.captureStream(opts.fps).getVideoTracks()[0] as CanvasTrack | undefined;
+      }
+
+      const stream = new MediaStream([...(vTrack ? [vTrack] : []), ...dest.stream.getAudioTracks()]);
       hintForMotion(stream);
-      rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: W >= 1080 ? 8_000_000 : 4_500_000 });
+      rec = new MediaRecorder(stream, {
+        mimeType: mime,
+        videoBitsPerSecond: renderBitrate(opts.height, opts.fps),
+        audioBitsPerSecond: 192_000,
+      });
       const chunks: Blob[] = [];
       let t = 0;
       let last = 0;
@@ -260,6 +282,9 @@ export function startRender(p: Project, opts: RenderOptions, onProgress: (r: Ren
 
       rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
       rec.onstop = () => {
+        clearTimeout(timer);
+        cancelAnimationFrame(raf);
+        stream.getTracks().forEach((tr) => tr.stop());
         pool?.dispose();
         audioCtx?.close().catch(() => {});
         if (cancelled) reject(new RenderCancelled());
@@ -272,15 +297,33 @@ export function startRender(p: Project, opts: RenderOptions, onProgress: (r: Ren
       last = performance.now();
       fpsWindowStart = last;
 
+      const targetFrameMs = 1000 / opts.fps;
+      const useHighRateTimer = opts.fps > 60;
+
+      const scheduleNext = (frameStart: number) => {
+        if (cancelled) return;
+        if (useHighRateTimer) {
+          const spent = performance.now() - frameStart;
+          timer = window.setTimeout(() => step(performance.now()), Math.max(1, targetFrameMs - spent));
+        } else {
+          raf = requestAnimationFrame(step);
+        }
+      };
+
       const step = (now: number) => {
         if (cancelled) return;
-        const dt = Math.min(0.1, (now - last) / 1000);
+        if (resetLastOnResume) {
+          last = now;
+          resetLastOnResume = false;
+        }
+        const dt = Math.min(0.1, Math.max(0, (now - last) / 1000));
         last = now;
         if (!paused) {
           t += dt;
           pool!.sync(p, t, true);
           if (!frameReady(p, t, pool!.visuals)) stalled++;
           drawFrame(ctx, W, H, { project: p, time: t, duration, visuals: pool!.visuals, includeOverlay: false });
+          if (manualFrame) vTrack?.requestFrame?.();
           frames++;
           if (now - fpsWindowStart >= 1000) {
             fps = (frames * 1000) / (now - fpsWindowStart);
@@ -294,10 +337,12 @@ export function startRender(p: Project, opts: RenderOptions, onProgress: (r: Ren
             return;
           }
         }
-        raf = requestAnimationFrame(step);
+        scheduleNext(now);
       };
-      raf = requestAnimationFrame(step);
+      scheduleNext(last);
     })().catch((e) => {
+      clearTimeout(timer);
+      cancelAnimationFrame(raf);
       pool?.dispose();
       audioCtx?.close().catch(() => {});
       reject(e instanceof Error ? e : new Error(String(e)));
@@ -315,10 +360,12 @@ export function startRender(p: Project, opts: RenderOptions, onProgress: (r: Ren
     resume() {
       if (!paused || !rec) return;
       paused = false;
+      resetLastOnResume = true;
       if (rec.state === "paused") rec.resume();
     },
     cancel() {
       cancelled = true;
+      clearTimeout(timer);
       cancelAnimationFrame(raf);
       nativeAbort?.();
       if (rec && rec.state !== "inactive") rec.stop();

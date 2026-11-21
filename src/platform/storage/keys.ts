@@ -20,4 +20,5 @@ export const MIGRATIONS = {
   streamsReresolved: "clipkit.streams.reresolved.v1",
   legacyQueue: "clipkit.queue.v1",
   premadeTemplates: "clipkit.templates.premade.v1",
+  defaultLayoutSplit: "clipkit.settings.defaultLayoutSplit.v1",
 } as const;

@@ -148,25 +148,42 @@ function FacecamPicker({ project, player, rect, onChange }: { project: Project; 
   // (including each queue progress tick), which starved the 250 ms timer during drags.
   const latest = useRef({ project, player });
   latest.current = { project, player };
+  const drawnRef = useRef<{ mediaId: string; time: number; w: number; h: number } | null>(null);
   useEffect(() => {
-    const t = setInterval(() => {
+    const draw = () => {
       const { project, player } = latest.current;
       const a = activeClipAt(project, player.clock.time) ?? (project.video[0] ? { clip: project.video[0] } : null);
       const v = a ? player.pool.visuals.get(a.clip.mediaId) : undefined;
       const c = canvasRef.current;
-      if (!v || !c) return;
+      if (!a || !v || !c) return;
       const w = v instanceof HTMLVideoElement ? v.videoWidth : v.naturalWidth;
       const h = v instanceof HTMLVideoElement ? v.videoHeight : v.naturalHeight;
       if (!w || !h) return;
+      if (v instanceof HTMLVideoElement && (v.readyState < 2 || v.seeking)) return;
+      const mediaTime = v instanceof HTMLVideoElement ? v.currentTime : 0;
+      const targetH = Math.round((480 * h) / w);
+      const prev = drawnRef.current;
+      if (prev && prev.mediaId === a.clip.mediaId && prev.w === w && prev.h === h && Math.abs(prev.time - mediaTime) < 0.02) {
+        return;
+      }
       setAspect(w / h);
-      c.width = 480;
-      c.height = Math.round((480 * h) / w);
+      if (c.width !== 480 || c.height !== targetH) {
+        c.width = 480;
+        c.height = targetH;
+      }
+      const ctx = c.getContext("2d", { alpha: false });
+      if (!ctx) return;
       try {
-        c.getContext("2d")!.drawImage(v, 0, 0, c.width, c.height);
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(v, 0, 0, c.width, c.height);
+        drawnRef.current = { mediaId: a.clip.mediaId, time: mediaTime, w, h };
       } catch {
         /* not ready */
       }
-    }, 250);
+    };
+    draw();
+    const t = setInterval(draw, 250);
     return () => clearInterval(t);
   }, []);
 

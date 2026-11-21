@@ -6,8 +6,8 @@ import { usePlayer } from "../editor/player";
 import { Preview } from "../editor/Preview";
 import { Timeline, type Selection } from "../editor/Timeline";
 import { CaptionsPanel, ClipPanel, FramePanel, MediaPanel, OverlayPanel, TemplatesPanel, TextPanel } from "../editor/panels";
-import { applyFacecam, detectFacecam, waitForReadyVisual } from "../editor/facecam";
-import { activeClipAt, fileNameFor, projectDuration, withoutVideoClip } from "../lib/project";
+import { applyFacecam, detectFacecam, isDefaultFacecamRect, waitForReadyVisual } from "../editor/facecam";
+import { activeClipAt, DEFAULT_LAYOUT, fileNameFor, projectDuration, withoutVideoClip } from "../lib/project";
 import { importFile } from "../lib/media";
 import { Field, Modal } from "../components/ui";
 import { fmtTime, fmtWhen, uid } from "../lib/util";
@@ -111,7 +111,6 @@ function EditorWorkspace({ project }: { project: Project }) {
   const [frame, setFrame] = useState<"phone" | "plain">("phone");
   const [naming, setNaming] = useState<string | null>(null);
   const [closing, setClosing] = useState(false);
-  const [faceBusy, setFaceBusy] = useState(false);
   const duration = useMemo(() => projectDuration(project), [project]);
 
   const select = useCallback((s: Selection) => {
@@ -127,35 +126,43 @@ function EditorWorkspace({ project }: { project: Project }) {
     if (!list.some((x) => x.id === selection.id)) setSelection(null);
   }, [project, selection]);
 
-  // Auto face + game detection: once the first frame is decodable, find the facecam and switch
-  // to the split layout (game on top, facecam below). Runs once per project; a template or an
-  // earlier detection that already chose a facecam box is left alone.
+  // Auto face detection in Facecam + game mode: on by default whenever split mode is active
+  // and the facecam box is still at the uncustomized default placeholder. Runs once per
+  // project + primary clip so manual drags, Undo, or saved custom templates are respected.
   const latest = useRef({ project, player, editProject, toast });
   latest.current = { project, player, editProject, toast };
-  const autoFacecamRan = useRef<string | null>(null);
+  const autoFacecamAttempted = useRef(new Set<string>());
   const faceRef = useRef<string | null>(null);
   const autoFacecam = settings.autoFacecamOnOpen;
+  const firstVideoMediaId = project.video[0]?.mediaId ?? "";
   useEffect(() => {
-    if (!autoFacecam) return;
-    if (autoFacecamRan.current === project.id) return;
-    autoFacecamRan.current = project.id;
+    if (!autoFacecam || project.layout.mode !== "split" || !firstVideoMediaId) return;
+    if (!isDefaultFacecamRect(latest.current.project.layout.facecam, DEFAULT_LAYOUT.facecam)) return;
+    const attemptKey = `${project.id}:${firstVideoMediaId}`;
+    if (autoFacecamAttempted.current.has(attemptKey)) return;
+
     let stopped = false;
     (async () => {
-      const found = await waitForReadyVisual(project, player, 20000, () => stopped);
+      const found = await waitForReadyVisual(latest.current.project, player, 20000, () => stopped);
       if (!found || stopped) return;
-      if (latest.current.project.layout.mode === "split") return; // a template already chose the box
+      if (latest.current.project.layout.mode !== "split") return;
+      if (!isDefaultFacecamRect(latest.current.project.layout.facecam, DEFAULT_LAYOUT.facecam)) return;
+      autoFacecamAttempted.current.add(attemptKey);
       try {
-        const res = await detectFacecam(project, player, faceRef);
+        const res = await detectFacecam(latest.current.project, player, faceRef);
+        if (stopped) return;
+        if (latest.current.project.layout.mode !== "split") return;
+        if (!isDefaultFacecamRect(latest.current.project.layout.facecam, DEFAULT_LAYOUT.facecam)) return;
         if (res.ok && res.rect) {
           applyFacecam((patch, key) => latest.current.editProject((p) => ({ ...p, layout: { ...p.layout, ...patch } }), key), res.rect);
           latest.current.toast("Facecam detected — game on top, face below", "success");
         }
       } catch {
-        /* No detector available (needs OpenCV Python or a Gemini key); Frame → Detect with AI retries manually. */
+        /* Detector unavailable or no face in frame; user can drag/resize the facecam box directly. */
       }
     })();
     return () => { stopped = true; };
-  }, [project.id, player, autoFacecam]);
+  }, [project.id, project.layout.mode, firstVideoMediaId, player, autoFacecam]);
 
   const split = useCallback(() => {
     const t = player.clock.time;
@@ -252,23 +259,6 @@ function EditorWorkspace({ project }: { project: Project }) {
     select({ kind: "text", id: item.id });
   }, [duration, player, editProject, select]);
 
-  const runDetectAi = useCallback(async () => {
-    setFaceBusy(true);
-    try {
-      const res = await detectFacecam(latest.current.project, player, faceRef);
-      if (res.ok && res.rect) {
-        applyFacecam((patch, key) => latest.current.editProject((p) => ({ ...p, layout: { ...p.layout, ...patch } }), key), res.rect);
-        toast("Facecam detected and placed", "success");
-      } else {
-        toast(res.message, res.notify === "toast" ? "error" : "info");
-      }
-    } catch (e) {
-      toast((e as Error).message || "Facecam detection failed.", "error");
-    } finally {
-      setFaceBusy(false);
-    }
-  }, [player, toast]);
-
   return (
     <main className="editor">
       <div className="editor-head">
@@ -339,8 +329,6 @@ function EditorWorkspace({ project }: { project: Project }) {
             onSplit={split}
             onDelete={removeSelected}
             onAddText={addQuickText}
-            onDetectAi={() => void runDetectAi()}
-            detectingAi={faceBusy}
           />
         </div>
         <Preview player={player} phone={settings.phone} frame={frame} onFrame={setFrame} />

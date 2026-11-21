@@ -1340,7 +1340,7 @@
 .insp-mini-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px 10px;
+  gap: 8px 18px;
   padding-top: 2px;
 }
 .insp-mini-item {
@@ -1349,9 +1349,7 @@
   justify-content: space-between;
   gap: 10px;
   min-width: 0;
-  padding: 8px 10px;
-  border-radius: 10px;
-  background: var(--surface-2);
+  padding: 2px 0;
 }
 .insp-mini-item > span {
   color: var(--muted-2);

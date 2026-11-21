@@ -264,6 +264,7 @@ async function writeOverlayAss(dir, project, width = 1080, height = 1920) {
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
     `Style: Default,${font},${fontSize},${assColor(style.highlight, "38bdf8")},${assColor(style.color, "ffffff")},&H00000000,&HB8000000,${style.font === "bebas" ? 0 : -1},0,0,0,100,100,0,0,${borderStyle},${outline},0,5,40,40,0,1`,
     `Style: TextOverlay,Bebas Neue,${Math.round(92 * k)},&H0015CCFA,&H0015CCFA,&H00000000,&HB8000000,0,0,0,0,100,100,0,0,1,6,0,5,40,40,0,1`,
+    `Style: TextBox,Bebas Neue,${Math.round(92 * k)},&H0015CCFA,&H0015CCFA,&H29000000,&H29000000,0,0,0,0,100,100,0,0,3,14,0,5,40,40,0,1`,
     "[Events]",
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
   ];
@@ -285,10 +286,12 @@ async function writeOverlayAss(dir, project, width = 1080, height = 1920) {
     const ts = Math.max(12, Math.round(clampNumber(t.size, 12, 240, 88) * k));
     const tf = assFontName(t.font);
     const tc = assColor(t.color, "facc15");
-    const bord = t.background ? 14 : t.stroke ? Math.max(2, Math.round(ts * 0.1)) : 0;
-    const bgTag = t.background ? `\\3c&H000000&\\3a&H48&` : "";
+    const bord = t.background ? Math.max(10, Math.round(ts * 0.22)) : t.stroke ? Math.max(2, Math.round(ts * 0.1)) : 0;
+    const bgc = assColor(t.backgroundColor, "000000");
+    const bgTag = t.background ? `\\3c${bgc}\\4c${bgc}\\3a&H29&\\4a&H29&` : "";
+    const styleName = t.background ? "TextBox" : "TextOverlay";
     lines.push(
-      `Dialogue: 1,${assTime(start)},${assTime(end)},TextOverlay,,0,0,0,,{\\an5\\pos(${tx},${ty})\\fn${tf}\\fs${ts}\\c${tc}\\bord${bord}${bgTag}}${assText(t.text)}`,
+      `Dialogue: 1,${assTime(start)},${assTime(end)},${styleName},,0,0,0,,{\\an5\\pos(${tx},${ty})\\fn${tf}\\fs${ts}\\c${tc}\\bord${bord}${bgTag}}${assText(t.text)}`,
     );
   }
 

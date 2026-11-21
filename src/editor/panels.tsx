@@ -480,6 +480,7 @@ export function TextPanel({ project, player, selection, onSelect }: { project: P
       font: "tiktok",
       stroke: false,
       background: true,
+      backgroundColor: "#000000",
     };
     editProject((p) => ({ ...p, texts: [...p.texts, t] }));
     onSelect({ kind: "text", id: t.id });
@@ -534,6 +535,14 @@ export function TextPanel({ project, player, selection, onSelect }: { project: P
               <div className="insp-mini-item">
                 <span>Background</span>
                 <Switch label="Background" checked={sel.background} onChange={(v) => set({ background: v }, "tb")} />
+              </div>
+              <div className="insp-mini-item">
+                <span>Bg colour</span>
+                <ColorField
+                  label="Background colour"
+                  value={sel.backgroundColor || "#000000"}
+                  onChange={(v) => set({ backgroundColor: v, background: true }, "tbgc")}
+                />
               </div>
               <div className="insp-mini-item">
                 <span>Outline</span>

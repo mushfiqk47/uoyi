@@ -73,6 +73,12 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
   ctx.roundRect(x, y, w, h, r);
 }
 
+function hexToRgba(hex: string | undefined, alpha: number): string {
+  const clean = /^#[0-9a-f]{6}$/i.test(String(hex || "")) ? String(hex) : "#000000";
+  const n = parseInt(clean.slice(1), 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
+}
+
 function drawTextItem(ctx: CanvasRenderingContext2D, t: TextItem, W: number, H: number) {
   const k = W / 1080;
   const size = t.size * k;
@@ -87,7 +93,7 @@ function drawTextItem(ctx: CanvasRenderingContext2D, t: TextItem, W: number, H: 
     const x = t.x * W;
     if (t.background) {
       const w = ctx.measureText(line).width;
-      ctx.fillStyle = "rgba(0,0,0,0.72)";
+      ctx.fillStyle = hexToRgba(t.backgroundColor, 0.84);
       roundRect(ctx, x - w / 2 - size * 0.3, y - lh / 2, w + size * 0.6, lh, size * 0.22);
       ctx.fill();
     }

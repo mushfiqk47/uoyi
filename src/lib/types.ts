@@ -47,6 +47,7 @@ export interface TextItem {
   font: CaptionFont;
   stroke: boolean;
   background: boolean;
+  backgroundColor?: string;
 }
 
 export interface CaptionWord {

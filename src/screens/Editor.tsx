@@ -254,6 +254,7 @@ function EditorWorkspace({ project }: { project: Project }) {
       font: "tiktok",
       stroke: false,
       background: true,
+      backgroundColor: "#000000",
     };
     editProject((p) => ({ ...p, texts: [...p.texts, item] }));
     select({ kind: "text", id: item.id });

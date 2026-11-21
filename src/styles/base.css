@@ -316,6 +316,15 @@ p {
 .input.num {
   font-variant-numeric: tabular-nums;
 }
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
 
 .seg {
   display: inline-flex;

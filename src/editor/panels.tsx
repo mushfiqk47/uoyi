@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent } from "react";
 import {
   ArrowLeft, ArrowRight, Copy, Crosshair, FileUp, Film, Image as ImageIcon, LayoutTemplate, Music, Pencil, Plus, Save, Search,
-  Sparkles, Star, Trash2, Type, Upload, Wand2, Check,
+  Sparkles, Star, Trash2, Type, Upload, Wand2, Check, X,
 } from "lucide-react";
 import type { CaptionFont, CaptionWord, Layout, Overlay, OverlayPlatform, Project, Rect, TextItem } from "../lib/types";
 import { useStore } from "../store";
@@ -22,9 +22,9 @@ const FONT_OPTIONS: { value: CaptionFont; label: string }[] = [
   { value: "inter", label: "Inter" },
 ];
 
-function Section({ title, children, aside }: { title: string; children: React.ReactNode; aside?: React.ReactNode }) {
+function Section({ title, children, aside, wide }: { title: string; children: React.ReactNode; aside?: React.ReactNode; wide?: boolean }) {
   return (
-    <section className="insp-sec">
+    <section className={`insp-sec${wide ? " wide" : ""}`}>
       <div className="insp-sec-head">
         <h3>{title}</h3>
         {aside}
@@ -41,6 +41,20 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
       <div className="insp-ctl">{children}</div>
     </div>
   );
+}
+
+function StackField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="insp-field">
+      <span>{label}</span>
+      {children}
+    </div>
+  );
+}
+
+function fmtSignedPct(v: number): string {
+  const pct = Math.round(v * 100);
+  return pct > 0 ? `+${pct}%` : `${pct}%`;
 }
 
 // ---------------------------------------------------------------- Frame
@@ -114,7 +128,7 @@ export function FramePanel({
         <p className="insp-help">
           {faceInfo || "YuNet + SFace auto-detects and locks onto the streamer's facecam."}
         </p>
-        <div className="row" style={{ justifyContent: "flex-end" }}>
+        <div className="insp-actions-end">
           <button className="btn plain sm" onClick={() => { faceRef.current = null; setFaceInfo("Face lock reset."); }}>
             Reset lock
           </button>
@@ -125,13 +139,14 @@ export function FramePanel({
         title={L.mode === "split" ? "Clip & Facecam" : "Clip & Quick"}
         aside={
           <button className="btn ghost sm" onClick={onAddText} disabled={duration <= 0} title="Add text overlay at playhead">
-            <Plus className="ic" /> Text
+            <Plus className="ic" /> Add text
           </button>
         }
       >
         {targetVideo && (
-          <Row label="Speed">
+          <StackField label="Clip speed">
             <Seg
+              full
               label="Clip speed"
               value={targetVideo.speed}
               onChange={(speed) =>
@@ -145,7 +160,7 @@ export function FramePanel({
               }
               options={[0.5, 0.75, 1, 1.25, 1.5, 2].map((v) => ({ value: v, label: `${v}×` }))}
             />
-          </Row>
+          </StackField>
         )}
         {L.mode === "split" ? (
           <>
@@ -167,9 +182,11 @@ export function FramePanel({
         </Row>
         <Row label="Left / right">
           <Range label="Pan horizontally" value={L.panX} min={-1} max={1} onChange={(v) => set({ panX: v }, "panX")} />
+          <span className="val tabular">{fmtSignedPct(L.panX)}</span>
         </Row>
         <Row label="Up / down">
           <Range label="Pan vertically" value={L.panY} min={-1} max={1} onChange={(v) => set({ panY: v }, "panY")} />
+          <span className="val tabular">{fmtSignedPct(L.panY)}</span>
         </Row>
       </Section>
     </>
@@ -346,6 +363,7 @@ export function CaptionsPanel({
     <>
       <Section
         title="Words"
+        wide={words.length > 0}
         aside={
           <button className="btn accent sm" onClick={() => void generate()} disabled={busy || duration <= 0} title="Generate captions with AI">
             {busy ? <span className="spinner" /> : <Sparkles className="ic" />} AI captions
@@ -368,7 +386,7 @@ export function CaptionsPanel({
         {words.length > 0 && (
           <>
             <div className="row word-head">
-              <span className="muted grow">{words.length} words</span>
+              <span className="muted grow tabular">{words.length} words</span>
               <button className="btn plain sm" onClick={() => editProject((p) => ({ ...p, captions: [] }))}>
                 Clear all
               </button>
@@ -382,8 +400,8 @@ export function CaptionsPanel({
                   onFocus={() => onSelect({ kind: "caption", id: w.id })}
                 >
                   <input className="input" value={w.text} aria-label="Word" onChange={(e) => editWord(w.id, { text: e.target.value }, `w-${w.id}`)} />
-                  <NumberInput label="Start" value={w.start} step={0.05} min={0} onChange={(v) => editWord(w.id, { start: Math.max(0, Math.min(v, w.end - 0.05)) }, `ws-${w.id}`)} />
-                  <NumberInput label="End" value={w.end} step={0.05} onChange={(v) => editWord(w.id, { end: Math.max(v, w.start + 0.05) }, `we-${w.id}`)} />
+                  <NumberInput label="Start" value={w.start} step={0.05} min={0} suffix="s" onChange={(v) => editWord(w.id, { start: Math.max(0, Math.min(v, w.end - 0.05)) }, `ws-${w.id}`)} />
+                  <NumberInput label="End" value={w.end} step={0.05} suffix="s" onChange={(v) => editWord(w.id, { end: Math.max(v, w.start + 0.05) }, `we-${w.id}`)} />
                   <button
                     className="btn plain icon sm"
                     title="Start at the playhead"
@@ -404,25 +422,31 @@ export function CaptionsPanel({
           </>
         )}
       </Section>
-      <Section title="Style & Font">
-        <div className="row" style={{ flexWrap: "wrap", gap: 6 }}>
-          {CAPTION_PRESETS.map((p) => (
-            <button key={p.id} className="btn ghost sm" onClick={() => set(p.patch, `cp-${p.id}`)} title="Apply caption style preset">
-              {p.name}
-            </button>
-          ))}
-        </div>
-        <Seg full label="Caption font" value={s.font} onChange={(font) => set({ font }, "cfont")} options={FONT_OPTIONS} />
+      <Section title="Style & Font" wide={words.length > 0}>
+        <StackField label="Quick style presets">
+          <div className="caption-presets">
+            {CAPTION_PRESETS.map((p) => (
+              <button key={p.id} type="button" className="caption-preset-btn" onClick={() => set(p.patch, `cp-${p.id}`)} title="Apply caption style preset">
+                <i className="caption-preset-swatch" style={{ background: p.patch.highlight }} aria-hidden="true" />
+                <span>{p.name}</span>
+              </button>
+            ))}
+          </div>
+        </StackField>
+        <StackField label="Font">
+          <Seg full label="Caption font" value={s.font} onChange={(font) => set({ font }, "cfont")} options={FONT_OPTIONS} />
+        </StackField>
         <Row label="Size">
           <Range label="Caption size" value={s.size} min={20} max={80} step={1} onChange={(v) => set({ size: v }, "csize")} />
           <span className="val tabular">{s.size}</span>
         </Row>
         <Row label="Height">
           <Range label="Caption height" value={s.y} min={0.1} max={0.92} onChange={(v) => set({ y: v }, "cy")} />
+          <span className="val tabular">{Math.round(s.y * 100)}%</span>
         </Row>
-        <Row label="Words">
-          <Seg label="Words at once" value={s.wordsPerLine} onChange={(v) => set({ wordsPerLine: v }, "wpl")} options={[1, 2, 3, 4, 5].map((n) => ({ value: n, label: String(n) }))} />
-        </Row>
+        <StackField label="Words per line">
+          <Seg full label="Words at once" value={s.wordsPerLine} onChange={(v) => set({ wordsPerLine: v }, "wpl")} options={[1, 2, 3, 4, 5].map((n) => ({ value: n, label: String(n) }))} />
+        </StackField>
         <div className="insp-mini-grid">
           <div className="insp-mini-item">
             <span>Colour</span>
@@ -502,16 +526,20 @@ export function TextPanel({ project, player, selection, onSelect }: { project: P
         {sel ? (
           <>
             <textarea className="textarea insp-transcript" rows={2} value={sel.text} onChange={(e) => set({ text: e.target.value }, "tt")} aria-label="Text" />
-            <Seg full label="Font" value={sel.font} onChange={(font) => set({ font }, "tf")} options={FONT_OPTIONS} />
+            <StackField label="Font">
+              <Seg full label="Font" value={sel.font} onChange={(font) => set({ font }, "tf")} options={FONT_OPTIONS} />
+            </StackField>
             <Row label="Size">
               <Range label="Text size" value={sel.size} min={28} max={180} step={1} onChange={(v) => set({ size: v }, "ts")} />
               <span className="val tabular">{sel.size}</span>
             </Row>
             <Row label="Left / right">
               <Range label="Horizontal position" value={sel.x} min={0.1} max={0.9} onChange={(v) => set({ x: v }, "tx")} />
+              <span className="val tabular">{Math.round(sel.x * 100)}%</span>
             </Row>
             <Row label="Up / down">
               <Range label="Vertical position" value={sel.y} min={0.05} max={0.95} onChange={(v) => set({ y: v }, "ty")} />
+              <span className="val tabular">{Math.round(sel.y * 100)}%</span>
             </Row>
             <div className="insp-mini-grid">
               <div className="insp-mini-item">
@@ -537,7 +565,7 @@ export function TextPanel({ project, player, selection, onSelect }: { project: P
             </div>
           </>
         ) : (
-          <p className="insp-help">Select a text item on the left or in the timeline to edit font, position, color, and timing.</p>
+          <p className="insp-help">Select a text item from the list or in the timeline to edit font, position, color, and timing.</p>
         )}
       </Section>
     </>
@@ -695,18 +723,28 @@ export function ClipPanel({ project, selection, onSelect, player }: { project: P
     const m = project.media.find((x) => x.id === c.mediaId);
     const set = (patch: Partial<typeof c>, key: string) => editProject((p) => ({ ...p, music: p.music.map((x) => (x.id === c.id ? { ...x, ...patch } : x)) }), `${key}-${c.id}`);
     return (
-      <Section title={m?.name ?? "Sound"} aside={<button className="btn plain icon sm" aria-label="Delete sound" onClick={() => { editProject((p) => ({ ...p, music: p.music.filter((x) => x.id !== c.id) })); onSelect(null); }}><Trash2 className="ic" /></button>}>
-        <Row label="Volume">
-          <Range label="Volume" value={c.volume} min={0} max={1} onChange={(v) => set({ volume: v }, "mv")} />
-          <span className="val tabular">{Math.round(c.volume * 100)}%</span>
-        </Row>
-        <div className="two">
-          <Field label="Starts at">
-            <NumberInput label="Starts at" value={c.start} step={0.1} min={0} suffix="s" onChange={(v) => set({ start: Math.max(0, v) }, "ms")} />
-          </Field>
-          <Field label="Length">
-            <NumberInput label="Length" value={c.out - c.in} step={0.1} min={0.2} suffix="s" onChange={(v) => set({ out: clamp(c.in + v, c.in + 0.2, m?.duration ?? c.out) }, "ml")} />
-          </Field>
+      <Section
+        title={`Selected audio · ${m?.name ?? "Sound"}`}
+        aside={
+          <div className="row">
+            <button className="btn plain icon sm" aria-label="Delete sound" title="Delete sound" onClick={() => { editProject((p) => ({ ...p, music: p.music.filter((x) => x.id !== c.id) })); onSelect(null); }}><Trash2 className="ic" /></button>
+            <button className="btn plain icon sm" aria-label="Deselect sound" title="Close selection" onClick={() => onSelect(null)}><X className="ic" /></button>
+          </div>
+        }
+      >
+        <div className="clip-panel-grid">
+          <Row label="Volume">
+            <Range label="Volume" value={c.volume} min={0} max={1} onChange={(v) => set({ volume: v }, "mv")} />
+            <span className="val tabular">{Math.round(c.volume * 100)}%</span>
+          </Row>
+          <div className="two">
+            <Field label="Starts at">
+              <NumberInput label="Starts at" value={c.start} step={0.1} min={0} suffix="s" onChange={(v) => set({ start: Math.max(0, v) }, "ms")} />
+            </Field>
+            <Field label="Length">
+              <NumberInput label="Length" value={c.out - c.in} step={0.1} min={0.2} suffix="s" onChange={(v) => set({ out: clamp(c.in + v, c.in + 0.2, m?.duration ?? c.out) }, "ml")} />
+            </Field>
+          </div>
         </div>
       </Section>
     );
@@ -727,35 +765,40 @@ export function ClipPanel({ project, selection, onSelect, player }: { project: P
     });
   return (
     <Section
-      title={m?.name ?? "Clip"}
+      title={`Selected clip · ${m?.name ?? "Clip"}`}
       aside={
         <div className="row">
-          <button className="btn plain icon sm" aria-label="Move earlier" disabled={i === 0} onClick={() => move(-1)}><ArrowLeft className="ic" /></button>
-          <button className="btn plain icon sm" aria-label="Move later" disabled={i === project.video.length - 1} onClick={() => move(1)}><ArrowRight className="ic" /></button>
-          <button className="btn plain icon sm" aria-label="Delete clip" onClick={() => { editProject((p) => withoutVideoClip(p, c.id)); onSelect(null); }}><Trash2 className="ic" /></button>
+          <button className="btn ghost sm" onClick={() => player.seek(clipStarts(project)[i])}>
+            Jump to clip
+          </button>
+          <button className="btn plain icon sm" aria-label="Move earlier" title="Move earlier" disabled={i === 0} onClick={() => move(-1)}><ArrowLeft className="ic" /></button>
+          <button className="btn plain icon sm" aria-label="Move later" title="Move later" disabled={i === project.video.length - 1} onClick={() => move(1)}><ArrowRight className="ic" /></button>
+          <button className="btn plain icon sm" aria-label="Delete clip" title="Delete clip" onClick={() => { editProject((p) => withoutVideoClip(p, c.id)); onSelect(null); }}><Trash2 className="ic" /></button>
+          <button className="btn plain icon sm" aria-label="Deselect clip" title="Close selection" onClick={() => onSelect(null)}><X className="ic" /></button>
         </div>
       }
     >
-      <Row label="Speed">
-        <Seg label="Speed" value={c.speed} onChange={(v) => set({ speed: v }, "sp")} options={[0.5, 0.75, 1, 1.25, 1.5, 2].map((v) => ({ value: v, label: `${v}×` }))} />
-      </Row>
-      {m?.kind === "video" && (
-        <Row label="Volume">
-          <Range label="Volume" value={c.volume} min={0} max={1} onChange={(v) => set({ volume: v }, "vv")} />
-          <span className="val tabular">{Math.round(c.volume * 100)}%</span>
-        </Row>
-      )}
-      <div className="two">
-        <Field label="From (in the source)">
-          <NumberInput label="From" value={c.in} step={0.1} min={0} suffix="s" onChange={(v) => set({ in: clamp(v, 0, c.out - 0.1) }, "in")} />
-        </Field>
-        <Field label="To">
-          <NumberInput label="To" value={c.out} step={0.1} suffix="s" onChange={(v) => set({ out: clamp(v, c.in + 0.1, m?.kind === "image" ? 600 : (m?.duration ?? v)) }, "out")} />
-        </Field>
+      <div className="clip-panel-grid">
+        <div className="clip-panel-col">
+          <StackField label="Speed">
+            <Seg full label="Speed" value={c.speed} onChange={(v) => set({ speed: v }, "sp")} options={[0.5, 0.75, 1, 1.25, 1.5, 2].map((v) => ({ value: v, label: `${v}×` }))} />
+          </StackField>
+          {m?.kind === "video" && (
+            <Row label="Volume">
+              <Range label="Volume" value={c.volume} min={0} max={1} onChange={(v) => set({ volume: v }, "vv")} />
+              <span className="val tabular">{Math.round(c.volume * 100)}%</span>
+            </Row>
+          )}
+        </div>
+        <div className="two">
+          <Field label="From (in source)">
+            <NumberInput label="From" value={c.in} step={0.1} min={0} suffix="s" onChange={(v) => set({ in: clamp(v, 0, c.out - 0.1) }, "in")} />
+          </Field>
+          <Field label="To">
+            <NumberInput label="To" value={c.out} step={0.1} suffix="s" onChange={(v) => set({ out: clamp(v, c.in + 0.1, m?.kind === "image" ? 600 : (m?.duration ?? v)) }, "out")} />
+          </Field>
+        </div>
       </div>
-      <button className="btn ghost sm" onClick={() => player.seek(clipStarts(project)[i])}>
-        Go to this clip
-      </button>
     </Section>
   );
 }

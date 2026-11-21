@@ -15,13 +15,13 @@ import { ClipThumb } from "../components/ClipThumb";
 
 type Tab = "frame" | "captions" | "text" | "overlay" | "media" | "templates";
 
-const TABS: { id: Tab; label: string; Icon: typeof Crop }[] = [
-  { id: "frame", label: "Frame", Icon: Crop },
-  { id: "captions", label: "Captions", Icon: Captions },
-  { id: "text", label: "Text", Icon: Type },
-  { id: "overlay", label: "Overlay", Icon: Smartphone },
-  { id: "media", label: "Media", Icon: ImagePlus },
-  { id: "templates", label: "Templates", Icon: LayoutTemplate },
+const TABS: { id: Tab; label: string; title: string; subtitle: string; Icon: typeof Crop }[] = [
+  { id: "frame", label: "Frame", title: "Frame & Layout", subtitle: "Crop mode, facecam AI, speed, and framing", Icon: Crop },
+  { id: "captions", label: "Captions", title: "Word Captions", subtitle: "AI transcription, word timing, and caption styling", Icon: Captions },
+  { id: "text", label: "Text", title: "Text Overlays", subtitle: "On-screen hooks, titles, and callouts", Icon: Type },
+  { id: "overlay", label: "Overlay", title: "Social Preview", subtitle: "Platform safe-zone UI preview (not burned into exports)", Icon: Smartphone },
+  { id: "media", label: "Media", title: "Project Media", subtitle: "Import video, images, and audio tracks", Icon: ImagePlus },
+  { id: "templates", label: "Templates", title: "Saved Templates", subtitle: "Reuse layouts, caption looks, and overlays", Icon: LayoutTemplate },
 ];
 
 export function Editor() {
@@ -251,6 +251,8 @@ function EditorWorkspace({ project }: { project: Project }) {
     select({ kind: "text", id: item.id });
   }, [duration, player, editProject, select]);
 
+  const activeTab = TABS.find((t) => t.id === tab) ?? TABS[0];
+
   return (
     <main className="editor">
       <div className="editor-head">
@@ -262,7 +264,7 @@ function EditorWorkspace({ project }: { project: Project }) {
             maxLength={80}
             onChange={(e) => editProject((p) => ({ ...p, name: e.target.value }), "name")}
           />
-          <span className="chip tabular">{fmtTime(duration, true)}</span>
+          <span className="editor-duration tabular">{fmtTime(duration, true)}</span>
         </div>
         <span className="grow" />
         <div className="editor-head-actions">
@@ -272,6 +274,7 @@ function EditorWorkspace({ project }: { project: Project }) {
           <button className="btn plain icon sm" onClick={redo} disabled={!canRedo} aria-label="Redo" title="Redo (Ctrl+Shift+Z)">
             <Redo2 className="ic" />
           </button>
+          <span className="editor-head-sep" aria-hidden="true" />
           <button className="btn ghost sm" onClick={() => setClosing(true)}>
             Close
           </button>
@@ -286,15 +289,26 @@ function EditorWorkspace({ project }: { project: Project }) {
       </div>
 
       <div className="editor-body">
-        <div className="editor-side">
-          <aside className="inspector">
-            <div className="insp-tabs" role="tablist">
-              {TABS.map(({ id, label, Icon }) => (
-                <button key={id} role="tab" aria-selected={tab === id} onClick={() => setTab(id)}>
-                  <Icon className="ic" />
-                  <span>{label}</span>
+        <aside className="inspector" aria-label="Editor inspector">
+          <div className="insp-tabs" role="tablist" aria-label="Editor tools">
+            {TABS.map(({ id, label, Icon }) => (
+              <button key={id} role="tab" aria-selected={tab === id} onClick={() => setTab(id)}>
+                <Icon className="ic" />
+                <span>{label}</span>
+              </button>
+            ))}
+          </div>
+          <div className="insp-main">
+            <div className="insp-head">
+              <div className="insp-head-text">
+                <h2>{activeTab.title}</h2>
+                <p>{activeTab.subtitle}</p>
+              </div>
+              {tab !== "text" && duration > 0 && (
+                <button className="btn ghost sm" onClick={addQuickText} title="Add a text overlay at the playhead">
+                  <Type className="ic" /> + Text
                 </button>
-              ))}
+              )}
             </div>
             <div className="insp-body" key={tab}>
               {showClipPanel && (
@@ -316,11 +330,12 @@ function EditorWorkspace({ project }: { project: Project }) {
               {tab === "media" && <MediaPanel project={project} player={player} />}
               {tab === "templates" && <TemplatesPanel project={project} />}
             </div>
-          </aside>
-          <Timeline project={project} player={player} selection={selection} onSelect={select} onSplit={split} />
-        </div>
+          </div>
+        </aside>
         <Preview player={player} phone={settings.phone} frame={frame} onFrame={setFrame} />
       </div>
+
+      <Timeline project={project} player={player} selection={selection} onSelect={select} onSplit={split} onDelete={removeSelected} />
 
       {naming !== null && (
         <Modal

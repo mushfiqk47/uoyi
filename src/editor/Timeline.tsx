@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as RPointerEvent, type KeyboardEvent as RKeyboardEvent } from "react";
-import { Captions, Film, Image as ImageIcon, Music, Type, ZoomIn, ZoomOut, Scissors } from "lucide-react";
+import { Captions, Film, Image as ImageIcon, Music, Trash2, Type, ZoomIn, ZoomOut, Scissors } from "lucide-react";
 import type { Project } from "../lib/types";
 import { clipLength, clipStarts } from "../lib/project";
 import { useStore } from "../store";
@@ -9,7 +9,7 @@ import { clamp, fmtTime } from "../lib/util";
 
 export type Selection = { kind: "video" | "text" | "caption" | "music"; id: string } | null;
 
-const HEAD_W = 96;
+const HEAD_W = 108;
 
 function useDrag() {
   return (e: RPointerEvent, onMove: (dx: number, ev: PointerEvent) => void, onEnd?: () => void) => {
@@ -41,12 +41,14 @@ export function Timeline({
   selection,
   onSelect,
   onSplit,
+  onDelete,
 }: {
   project: Project;
   player: Player;
   selection: Selection;
   onSelect: (s: Selection) => void;
   onSplit: () => void;
+  onDelete?: () => void;
 }) {
   const { editProject } = useStore();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -106,8 +108,13 @@ export function Timeline({
         <button className="btn ghost sm" onClick={onSplit} title="Split at the playhead (S)">
           <Scissors className="ic" /> Split
         </button>
+        {onDelete && (
+          <button className="btn ghost sm" onClick={onDelete} disabled={!selection} title="Delete selected item (Del)">
+            <Trash2 className="ic" /> Delete
+          </button>
+        )}
         <span className="muted tl-hint">
-          Drag a clip's edges to trim. <kbd>Space</kbd> play · <kbd>S</kbd> split · <kbd>Del</kbd> remove
+          Drag edges to trim · <kbd>Space</kbd> play · <kbd>S</kbd> split · <kbd>Del</kbd> remove
         </span>
         <span className="grow" />
         <button className="btn plain icon sm" onClick={() => zoom(1 / 1.5)} aria-label="Zoom out" title="Zoom out">
@@ -117,7 +124,7 @@ export function Timeline({
           Fit
         </button>
         <button className="btn accent sm" onClick={() => zoom(1.5)} aria-label="Zoom in" title="Zoom in (+)">
-          <ZoomIn className="ic" /> +
+          <ZoomIn className="ic" /> Zoom in
         </button>
       </div>
       <div className="tl-scroll" ref={scrollRef}>

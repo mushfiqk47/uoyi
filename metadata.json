@@ -1,0 +1,8 @@
+{
+  "name": "Clipweave",
+  "description": "Weave live streams and gaming videos into viral 9:16 shorts with AI Studio Gemini and any OpenAI-compatible AI.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

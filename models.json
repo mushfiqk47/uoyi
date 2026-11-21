@@ -1,0 +1,30 @@
+[
+  {
+    "id": "parakeet-tdt",
+    "label": "Parakeet TDT 0.6B v3",
+    "repo": "nvidia/parakeet-tdt-0.6b-v3",
+    "size": "~630 MB",
+    "description": "Fast multilingual ASR with word timestamps. Best default for captions."
+  },
+  {
+    "id": "parakeet-ctc",
+    "label": "Parakeet CTC 1.1B",
+    "repo": "nvidia/parakeet-ctc-1.1b",
+    "size": "~1.1 GB",
+    "description": "Higher accuracy on long-form English audio."
+  },
+  {
+    "id": "nemotron-en",
+    "label": "Nemotron Speech EN 0.6B",
+    "repo": "nvidia/nemotron-speech-streaming-en-0.6b",
+    "size": "~630 MB",
+    "description": "English-only streaming model, very low latency."
+  },
+  {
+    "id": "nemotron-3.5",
+    "label": "Nemotron 3.5 ASR 0.6B",
+    "repo": "nvidia/nemotron-3.5-asr-streaming-0.6b",
+    "size": "~630 MB",
+    "description": "CLI default. Strong general-purpose streaming recognition."
+  }
+]

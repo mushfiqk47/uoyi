@@ -110,8 +110,16 @@ export function Viewer() {
     }
     try {
       const mediaStream = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: 60, max: 60 } },
-        audio: true,
+        video: {
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+          frameRate: { ideal: 60, max: 60 },
+        },
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+        },
       });
       const vTrack = mediaStream.getVideoTracks()[0];
       const label = vTrack?.label ? vTrack.label.replace(/^tab:/i, "").trim().slice(0, 48) : "Captured Tab";

@@ -19,4 +19,5 @@ export const MIGRATIONS = {
   recordSeconds: "clipkit.settings.recordSaveSeconds.v1",
   streamsReresolved: "clipkit.streams.reresolved.v1",
   legacyQueue: "clipkit.queue.v1",
+  premadeTemplates: "clipkit.templates.premade.v1",
 } as const;

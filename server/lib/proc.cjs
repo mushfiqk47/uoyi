@@ -152,17 +152,20 @@ function nvencEnabled() {
 
 async function probe(file) {
   const r = await run("ffprobe", ["-v", "error", "-print_format", "json", "-show_streams", "-show_format", file]);
-  if (r.code !== 0) return { width: 0, height: 0, duration: 0, hasAudio: false, hasVideo: false };
+  if (r.code !== 0) return { width: 0, height: 0, duration: 0, hasAudio: false, hasVideo: false, videoCodec: "", audioCodec: "" };
   let data = {};
   try { data = JSON.parse(r.stdout); } catch { /* unreadable */ }
   const streams = data.streams || [];
   const video = streams.find((s) => s.codec_type === "video");
+  const audio = streams.find((s) => s.codec_type === "audio");
   return {
     width: video?.width || 0,
     height: video?.height || 0,
     duration: Number(data.format?.duration) || Number(video?.duration) || 0,
-    hasAudio: streams.some((s) => s.codec_type === "audio"),
+    hasAudio: !!audio,
     hasVideo: !!video,
+    videoCodec: video?.codec_name || "",
+    audioCodec: audio?.codec_name || "",
   };
 }
 

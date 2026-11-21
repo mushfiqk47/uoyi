@@ -15,13 +15,13 @@ import { ClipThumb } from "../components/ClipThumb";
 
 type Tab = "frame" | "captions" | "text" | "overlay" | "media" | "templates";
 
-const TABS: { id: Tab; label: string; title: string; subtitle: string; Icon: typeof Crop }[] = [
-  { id: "frame", label: "Frame", title: "Frame & Layout", subtitle: "Crop mode, facecam AI, speed, and framing", Icon: Crop },
-  { id: "captions", label: "Captions", title: "Word Captions", subtitle: "AI transcription, word timing, and caption styling", Icon: Captions },
-  { id: "text", label: "Text", title: "Text Overlays", subtitle: "On-screen hooks, titles, and callouts", Icon: Type },
-  { id: "overlay", label: "Overlay", title: "Social Preview", subtitle: "Platform safe-zone UI preview (not burned into exports)", Icon: Smartphone },
-  { id: "media", label: "Media", title: "Project Media", subtitle: "Import video, images, and audio tracks", Icon: ImagePlus },
-  { id: "templates", label: "Templates", title: "Saved Templates", subtitle: "Reuse layouts, caption looks, and overlays", Icon: LayoutTemplate },
+const TABS: { id: Tab; label: string; Icon: typeof Crop }[] = [
+  { id: "frame", label: "Frame", Icon: Crop },
+  { id: "captions", label: "Captions", Icon: Captions },
+  { id: "text", label: "Text", Icon: Type },
+  { id: "overlay", label: "Overlay", Icon: Smartphone },
+  { id: "media", label: "Media", Icon: ImagePlus },
+  { id: "templates", label: "Templates", Icon: LayoutTemplate },
 ];
 
 export function Editor() {
@@ -111,6 +111,7 @@ function EditorWorkspace({ project }: { project: Project }) {
   const [frame, setFrame] = useState<"phone" | "plain">("phone");
   const [naming, setNaming] = useState<string | null>(null);
   const [closing, setClosing] = useState(false);
+  const [faceBusy, setFaceBusy] = useState(false);
   const duration = useMemo(() => projectDuration(project), [project]);
 
   const select = useCallback((s: Selection) => {
@@ -251,7 +252,22 @@ function EditorWorkspace({ project }: { project: Project }) {
     select({ kind: "text", id: item.id });
   }, [duration, player, editProject, select]);
 
-  const activeTab = TABS.find((t) => t.id === tab) ?? TABS[0];
+  const runDetectAi = useCallback(async () => {
+    setFaceBusy(true);
+    try {
+      const res = await detectFacecam(latest.current.project, player, faceRef);
+      if (res.ok && res.rect) {
+        applyFacecam((patch, key) => latest.current.editProject((p) => ({ ...p, layout: { ...p.layout, ...patch } }), key), res.rect);
+        toast("Facecam detected and placed", "success");
+      } else {
+        toast(res.message, res.notify === "toast" ? "error" : "info");
+      }
+    } catch (e) {
+      toast((e as Error).message || "Facecam detection failed.", "error");
+    } finally {
+      setFaceBusy(false);
+    }
+  }, [player, toast]);
 
   return (
     <main className="editor">
@@ -289,53 +305,46 @@ function EditorWorkspace({ project }: { project: Project }) {
       </div>
 
       <div className="editor-body">
-        <aside className="inspector" aria-label="Editor inspector">
-          <div className="insp-tabs" role="tablist" aria-label="Editor tools">
-            {TABS.map(({ id, label, Icon }) => (
-              <button key={id} role="tab" aria-selected={tab === id} onClick={() => setTab(id)}>
-                <Icon className="ic" />
-                <span>{label}</span>
-              </button>
-            ))}
-          </div>
-          <div className="insp-main">
-            <div className="insp-head">
-              <div className="insp-head-text">
-                <h2>{activeTab.title}</h2>
-                <p>{activeTab.subtitle}</p>
-              </div>
-              {tab !== "text" && duration > 0 && (
-                <button className="btn ghost sm" onClick={addQuickText} title="Add a text overlay at the playhead">
-                  <Type className="ic" /> + Text
+        <div className="editor-left">
+          <aside className="inspector" aria-label="Editor inspector">
+            <div className="insp-tabs" role="tablist" aria-label="Editor tools">
+              {TABS.map(({ id, label, Icon }) => (
+                <button key={id} role="tab" aria-selected={tab === id} onClick={() => setTab(id)}>
+                  <Icon className="ic" />
+                  <span>{label}</span>
                 </button>
-              )}
+              ))}
             </div>
-            <div className="insp-body" key={tab}>
-              {showClipPanel && (
-                <div className="insp-selected">
-                  <ClipPanel project={project} selection={selection} onSelect={select} player={player} />
-                </div>
-              )}
-              {tab === "frame" && (
-                <FramePanel
-                  project={project}
-                  player={player}
-                  selectedVideoId={selection?.kind === "video" ? selection.id : null}
-                  onAddText={addQuickText}
-                />
-              )}
-              {tab === "captions" && <CaptionsPanel project={project} player={player} selection={selection} onSelect={select} />}
-              {tab === "text" && <TextPanel project={project} player={player} selection={selection} onSelect={select} />}
-              {tab === "overlay" && <OverlayPanel project={project} />}
-              {tab === "media" && <MediaPanel project={project} player={player} />}
-              {tab === "templates" && <TemplatesPanel project={project} />}
+            <div className="insp-main">
+              <div className="insp-body" key={tab}>
+                {showClipPanel && (
+                  <div className="insp-selected">
+                    <ClipPanel project={project} selection={selection} onSelect={select} player={player} />
+                  </div>
+                )}
+                {tab === "frame" && <FramePanel project={project} player={player} />}
+                {tab === "captions" && <CaptionsPanel project={project} player={player} selection={selection} onSelect={select} />}
+                {tab === "text" && <TextPanel project={project} player={player} selection={selection} onSelect={select} />}
+                {tab === "overlay" && <OverlayPanel project={project} />}
+                {tab === "media" && <MediaPanel project={project} player={player} />}
+                {tab === "templates" && <TemplatesPanel project={project} />}
+              </div>
             </div>
-          </div>
-        </aside>
+          </aside>
+          <Timeline
+            project={project}
+            player={player}
+            selection={selection}
+            onSelect={select}
+            onSplit={split}
+            onDelete={removeSelected}
+            onAddText={addQuickText}
+            onDetectAi={() => void runDetectAi()}
+            detectingAi={faceBusy}
+          />
+        </div>
         <Preview player={player} phone={settings.phone} frame={frame} onFrame={setFrame} />
       </div>
-
-      <Timeline project={project} player={player} selection={selection} onSelect={select} onSplit={split} onDelete={removeSelected} />
 
       {naming !== null && (
         <Modal

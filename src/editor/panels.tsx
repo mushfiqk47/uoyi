@@ -11,7 +11,7 @@ import { clamp, fmtTime, uid } from "../lib/util";
 import { importFile } from "../lib/media";
 import { getBlob } from "../lib/db";
 import { generateCaptionsForBlob } from "../lib/ai/captions";
-import { applyFacecam, detectFacecam as detectFacecamNow } from "./facecam";
+import { missingPremadeTemplates } from "../lib/templates";
 import { parseSubtitles } from "../lib/subtitles";
 import type { Player } from "./player";
 import type { Selection } from "./Timeline";
@@ -22,7 +22,7 @@ const FONT_OPTIONS: { value: CaptionFont; label: string }[] = [
   { value: "inter", label: "Inter" },
 ];
 
-function Section({ title, children, aside, wide }: { title: string; children: React.ReactNode; aside?: React.ReactNode; wide?: boolean }) {
+function Section({ title, children, aside, wide }: { title: string; children?: React.ReactNode; aside?: React.ReactNode; wide?: boolean }) {
   return (
     <section className={`insp-sec${wide ? " wide" : ""}`}>
       <div className="insp-sec-head">
@@ -62,133 +62,78 @@ function fmtSignedPct(v: number): string {
 export function FramePanel({
   project,
   player,
-  selectedVideoId,
-  onAddText,
 }: {
   project: Project;
   player: Player;
-  selectedVideoId: string | null;
-  onAddText: () => void;
 }) {
-  const { editProject, toast } = useStore();
+  const { editProject } = useStore();
   const L = project.layout;
   const set = (patch: Partial<Layout>, key: string) => editProject((p) => ({ ...p, layout: { ...p.layout, ...patch } }), key);
-  const faceRef = useRef<string | null>(null);
-  const [faceBusy, setFaceBusy] = useState(false);
-  const [faceInfo, setFaceInfo] = useState("");
-  const targetVideo = (selectedVideoId && project.video.find((v) => v.id === selectedVideoId)) || project.video[0] || null;
-  const duration = projectDuration(project);
 
-  const detectFacecam = async () => {
-    setFaceBusy(true);
-    try {
-      const res = await detectFacecamNow(project, player, faceRef);
-      setFaceInfo(res.message);
-      if (res.ok && res.rect) {
-        applyFacecam(set, res.rect);
-        toast("Facecam detected and placed", "success");
-      } else if (res.notify === "toast") {
-        toast(res.message, "error");
+  const alignmentSection = (
+    <Section
+      title="Alignment settings"
+      aside={
+        <button className="btn plain sm" onClick={() => set({ zoom: 1, panX: 0, panY: 0 }, "reset")}>
+          Reset
+        </button>
       }
-    } catch (e) {
-      toast((e as Error).message || "Facecam detection failed.", "error");
-    } finally {
-      setFaceBusy(false);
-    }
-  };
-  return (
-    <>
-      <Section title="Layout">
-        <Seg
-          full
-          label="Layout"
-          value={L.mode}
-          onChange={(mode) => set({ mode }, "mode")}
-          options={[
-            { value: "fill", label: "Fill" },
-            { value: "fit", label: "Fit" },
-            { value: "split", label: "Facecam + game" },
-          ]}
-        />
-        <p className="insp-help">
-          {L.mode === "fill" && "Crops to fill 9:16. Zoom and pan to frame the action."}
-          {L.mode === "fit" && "Fits the whole picture over a blurred backdrop."}
-          {L.mode === "split" && "Game on top, streamer facecam below. Drag the box below."}
-        </p>
-      </Section>
+    >
+      <Row label="Zoom">
+        <Range label="Zoom" value={L.zoom} min={0.3} max={3} onChange={(v) => set({ zoom: v }, "zoom")} />
+        <span className="val tabular">{L.zoom.toFixed(2)}×</span>
+      </Row>
+      <Row label="Left / right">
+        <Range label="Pan horizontally" value={L.panX} min={-1} max={1} onChange={(v) => set({ panX: v }, "panX")} />
+        <span className="val tabular">{fmtSignedPct(L.panX)}</span>
+      </Row>
+      <Row label="Up / down">
+        <Range label="Pan vertically" value={L.panY} min={-1} max={1} onChange={(v) => set({ panY: v }, "panY")} />
+        <span className="val tabular">{fmtSignedPct(L.panY)}</span>
+      </Row>
+      {L.mode === "split" && (
+        <Row label="Cam height">
+          <Range label="Facecam height" value={L.facecamShare} min={0.2} max={0.6} onChange={(v) => set({ facecamShare: v }, "share")} />
+          <span className="val tabular">{Math.round(L.facecamShare * 100)}%</span>
+        </Row>
+      )}
+    </Section>
+  );
 
-      <Section
-        title="Facecam AI"
-        aside={
-          <button className="btn ghost sm" onClick={() => void detectFacecam()} disabled={faceBusy}>
-            <Sparkles className="ic" /> {faceBusy ? "Detecting…" : "Detect AI"}
-          </button>
-        }
-      >
-        <p className="insp-help">
-          {faceInfo || "YuNet + SFace auto-detects and locks onto the streamer's facecam."}
-        </p>
-        <div className="insp-actions-end">
-          <button className="btn plain sm" onClick={() => { faceRef.current = null; setFaceInfo("Face lock reset."); }}>
-            Reset lock
-          </button>
+  const layoutSection = (
+    <Section
+      title="Layout"
+      aside={
+        <div className="layout-seg-wrap">
+          <Seg
+            label="Layout"
+            value={L.mode}
+            onChange={(mode) => set({ mode }, "mode")}
+            options={[
+              { value: "fill", label: "Fill" },
+              { value: "fit", label: "Fit" },
+              { value: "split", label: "Facecam + game" },
+            ]}
+          />
         </div>
-      </Section>
+      }
+    />
+  );
 
-      <Section
-        title={L.mode === "split" ? "Clip & Facecam" : "Clip & Quick"}
-        aside={
-          <button className="btn ghost sm" onClick={onAddText} disabled={duration <= 0} title="Add text overlay at playhead">
-            <Plus className="ic" /> Add text
-          </button>
-        }
-      >
-        {targetVideo && (
-          <StackField label="Clip speed">
-            <Seg
-              full
-              label="Clip speed"
-              value={targetVideo.speed}
-              onChange={(speed) =>
-                editProject(
-                  (p) => ({
-                    ...p,
-                    video: p.video.map((v) => (v.id === targetVideo.id ? { ...v, speed } : v)),
-                  }),
-                  `sp-${targetVideo.id}`,
-                )
-              }
-              options={[0.5, 0.75, 1, 1.25, 1.5, 2].map((v) => ({ value: v, label: `${v}×` }))}
-            />
-          </StackField>
-        )}
-        {L.mode === "split" ? (
-          <>
-            <FacecamPicker project={project} player={player} rect={L.facecam} onChange={(facecam) => set({ facecam }, "facecam")} />
-            <Row label="Cam height">
-              <Range label="Facecam height" value={L.facecamShare} min={0.2} max={0.6} onChange={(v) => set({ facecamShare: v }, "share")} />
-              <span className="val tabular">{Math.round(L.facecamShare * 100)}%</span>
-            </Row>
-          </>
-        ) : (
-          <p className="insp-help">Switch Layout to Facecam + game to position and resize the camera crop.</p>
-        )}
+  return L.mode === "split" ? (
+    <div className="frame-split-grid">
+      <Section title="Facecam crop">
+        <FacecamPicker project={project} player={player} rect={L.facecam} onChange={(facecam) => set({ facecam }, "facecam")} />
       </Section>
-
-      <Section title={L.mode === "split" ? "Game picture" : "Picture"} aside={<button className="btn plain sm" onClick={() => set({ zoom: 1, panX: 0, panY: 0 }, "reset")}>Reset</button>}>
-        <Row label="Zoom">
-          <Range label="Zoom" value={L.zoom} min={0.3} max={3} onChange={(v) => set({ zoom: v }, "zoom")} />
-          <span className="val tabular">{L.zoom.toFixed(2)}×</span>
-        </Row>
-        <Row label="Left / right">
-          <Range label="Pan horizontally" value={L.panX} min={-1} max={1} onChange={(v) => set({ panX: v }, "panX")} />
-          <span className="val tabular">{fmtSignedPct(L.panX)}</span>
-        </Row>
-        <Row label="Up / down">
-          <Range label="Pan vertically" value={L.panY} min={-1} max={1} onChange={(v) => set({ panY: v }, "panY")} />
-          <span className="val tabular">{fmtSignedPct(L.panY)}</span>
-        </Row>
-      </Section>
+      <div className="frame-split-col">
+        {alignmentSection}
+        {layoutSection}
+      </div>
+    </div>
+  ) : (
+    <>
+      {alignmentSection}
+      {layoutSection}
     </>
   );
 }
@@ -225,18 +170,38 @@ function FacecamPicker({ project, player, rect, onChange }: { project: Project; 
     return () => clearInterval(t);
   }, []);
 
-  const start = (mode: "move" | "resize") => (e: RPointerEvent) => {
+  const start = (mode: "move" | "nw" | "ne" | "sw" | "se") => (e: RPointerEvent) => {
     e.preventDefault();
     e.stopPropagation();
     const box = boxRef.current!.getBoundingClientRect();
     const sx = e.clientX;
     const sy = e.clientY;
     const r0 = { ...rect };
+    const minSize = 0.05;
     const move = (ev: PointerEvent) => {
       const dx = (ev.clientX - sx) / box.width;
       const dy = (ev.clientY - sy) / box.height;
-      if (mode === "move") onChange({ ...r0, x: clamp(r0.x + dx, 0, 1 - r0.w), y: clamp(r0.y + dy, 0, 1 - r0.h) });
-      else onChange({ ...r0, w: clamp(r0.w + dx, 0.05, 1 - r0.x), h: clamp(r0.h + dy, 0.05, 1 - r0.y) });
+      if (mode === "move") {
+        onChange({ ...r0, x: clamp(r0.x + dx, 0, 1 - r0.w), y: clamp(r0.y + dy, 0, 1 - r0.h) });
+        return;
+      }
+      const right = r0.x + r0.w;
+      const bottom = r0.y + r0.h;
+      if (mode === "nw") {
+        const x = clamp(r0.x + dx, 0, right - minSize);
+        const y = clamp(r0.y + dy, 0, bottom - minSize);
+        onChange({ x, y, w: right - x, h: bottom - y });
+      } else if (mode === "ne") {
+        const y = clamp(r0.y + dy, 0, bottom - minSize);
+        const w = clamp(r0.w + dx, minSize, 1 - r0.x);
+        onChange({ x: r0.x, y, w, h: bottom - y });
+      } else if (mode === "sw") {
+        const x = clamp(r0.x + dx, 0, right - minSize);
+        const h = clamp(r0.h + dy, minSize, 1 - r0.y);
+        onChange({ x, y: r0.y, w: right - x, h });
+      } else {
+        onChange({ ...r0, w: clamp(r0.w + dx, minSize, 1 - r0.x), h: clamp(r0.h + dy, minSize, 1 - r0.y) });
+      }
     };
     const up = () => {
       window.removeEventListener("pointermove", move);
@@ -268,7 +233,10 @@ function FacecamPicker({ project, player, rect, onChange }: { project: Project; 
         <span className="facecam-tag">
           <Crosshair className="ic" /> Facecam
         </span>
-        <i className="facecam-handle" onPointerDown={start("resize")} />
+        <i className="facecam-handle nw" onPointerDown={start("nw")} />
+        <i className="facecam-handle ne" onPointerDown={start("ne")} />
+        <i className="facecam-handle sw" onPointerDown={start("sw")} />
+        <i className="facecam-handle se" onPointerDown={start("se")} />
       </div>
     </div>
   );
@@ -806,18 +774,40 @@ export function ClipPanel({ project, selection, onSelect, player }: { project: P
 // ---------------------------------------------------------------- Templates
 
 export function TemplatesPanel({ project }: { project: Project }) {
-  const { templates, saveTemplate, applyTemplate, updateTemplate, overwriteTemplate, duplicateTemplate, deleteTemplate, settings, updateSettings, toast } = useStore();
+  const { templates, saveTemplate, applyTemplate, restorePremadeTemplates, updateTemplate, overwriteTemplate, duplicateTemplate, deleteTemplate, settings, updateSettings, toast } = useStore();
   const [q, setQ] = useState("");
   const [naming, setNaming] = useState<{ id: string | null; name: string } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const missingCount = useMemo(() => missingPremadeTemplates(templates).length, [templates]);
   const shown = templates
     .filter((t) => t.name.toLowerCase().includes(q.trim().toLowerCase()))
     .sort((a, b) => Number(b.favorite) - Number(a.favorite) || b.updatedAt - a.updatedAt);
 
   return (
     <>
-      <Section title="Templates" aside={<button className="btn accent sm" onClick={() => setNaming({ id: null, name: project.name || "New template" })}><Save className="ic" /> Save look</button>}>
-        <p className="insp-help">A template saves this project's layout, facecam box, caption look, overlay and texts to reuse on the next clip.</p>
+      <Section
+        title="Templates"
+        wide
+        aside={
+          <div className="row">
+            {missingCount > 0 && (
+              <button
+                className="btn ghost sm"
+                onClick={() => {
+                  const n = restorePremadeTemplates();
+                  if (n > 0) toast(`Added ${n} premade template${n === 1 ? "" : "s"}`, "success");
+                }}
+              >
+                <Sparkles className="ic" /> Add premade
+              </button>
+            )}
+            <button className="btn accent sm" onClick={() => setNaming({ id: null, name: project.name || "New template" })}>
+              <Save className="ic" /> Save look
+            </button>
+          </div>
+        }
+      >
+        <p className="insp-help">One-click viral layouts, caption styles, and hooks. Save your own look or pick a premade preset below.</p>
         {templates.length > 3 && (
           <label className="search">
             <Search className="ic" />
@@ -825,7 +815,7 @@ export function TemplatesPanel({ project }: { project: Project }) {
           </label>
         )}
       </Section>
-      <Section title={`Saved looks (${shown.length})`}>
+      <Section title={`Looks (${shown.length})`} wide>
         {templates.length === 0 ? (
           <div className="tpl-empty">
             <LayoutTemplate className="ic" />
@@ -842,7 +832,8 @@ export function TemplatesPanel({ project }: { project: Project }) {
                 <div className="grow tpl-text">
                   <b>{t.name}</b>
                   <small>
-                    {t.layout.mode === "split" ? "With facecam" : t.layout.mode === "fit" ? "Fit" : "Fill"}
+                    {t.layout.mode === "split" ? "Facecam + game" : t.layout.mode === "fit" ? "Fit" : "Fill"}
+                    {` · ${t.captionStyle.font === "bebas" ? "Bebas" : t.captionStyle.font === "tiktok" ? "TikTok" : "Inter"}`}
                     {t.overlay.platform !== "off" && ` · ${t.overlay.platform === "tiktok" ? "TikTok" : t.overlay.platform === "shorts" ? "Shorts" : "Reels"}`}
                     {settings.defaultTemplateId === t.id && " · Default"}
                   </small>

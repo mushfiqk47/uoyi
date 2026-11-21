@@ -12,7 +12,16 @@ const { mediaJobs } = require("../state.cjs");
 function pickPlayable(info) {
   const formats = (info.formats || []).filter((f) => f.url && f.vcodec && f.vcodec !== "none");
   const withHeight = formats.filter((f) => f.height);
-  withHeight.sort((a, b) => (b.height || 0) - (a.height || 0));
+  const hasAudio = (f) => (f.acodec && f.acodec !== "none") || /m3u8/i.test(f.protocol || f.url || "");
+  withHeight.sort((a, b) => {
+    const hd = (b.height || 0) - (a.height || 0);
+    if (hd !== 0) return hd;
+    const ad = Number(hasAudio(b)) - Number(hasAudio(a));
+    if (ad !== 0) return ad;
+    const fd = (b.fps || 0) - (a.fps || 0);
+    if (fd !== 0) return fd;
+    return (b.tbr || b.vbr || 0) - (a.tbr || a.vbr || 0);
+  });
   const chosen = withHeight.find((f) => (f.height || 0) <= 1080) || withHeight[0];
   return chosen || formats[formats.length - 1] || null;
 }
@@ -81,7 +90,7 @@ async function startPrepare(url, title) {
 
   const args = [
     "--no-playlist",
-    "-f", "bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[height<=720]/bv*+ba/b",
+    "-f", "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080]/bv*+ba/b",
     "--merge-output-format", "mp4",
     "-o", file,
     url,

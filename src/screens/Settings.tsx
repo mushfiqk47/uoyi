@@ -157,13 +157,19 @@ function Appearance() {
   );
 }
 
-const SAVE_PRESETS = [30, 60, 120, 180, 300, 600, 900, 1800, 3600];
+const SAVE_PRESETS = [
+  { seconds: 900, label: "15 min" },
+  { seconds: 1800, label: "30 min" },
+  { seconds: 2700, label: "45 min" },
+  { seconds: 3600, label: "1 hour" },
+];
+const PRESET_SECONDS = SAVE_PRESETS.map((p) => p.seconds);
 
 function RecordInterval() {
   const { settings, updateSettings } = useStore();
   const value = settings.recordSaveSeconds;
-  const [custom, setCustom] = useState(value);
-  const [showCustom, setShowCustom] = useState(!SAVE_PRESETS.includes(value));
+  const [customMinutes, setCustomMinutes] = useState(() => String(Math.max(1, Math.round(value / 60))));
+  const [showCustom, setShowCustom] = useState(!PRESET_SECONDS.includes(value));
   return (
     <div className="interval-ctl">
       <select
@@ -171,32 +177,46 @@ function RecordInterval() {
         aria-label="Auto-save recording interval"
         value={showCustom ? "custom" : value}
         onChange={(e) => {
-          if (e.target.value === "custom") { setCustom(value); setShowCustom(true); }
-          else { setShowCustom(false); updateSettings({ recordSaveSeconds: Number(e.target.value) }); }
+          if (e.target.value === "custom") {
+            setCustomMinutes(String(Math.max(1, Math.round(value / 60))));
+            setShowCustom(true);
+          } else {
+            setShowCustom(false);
+            updateSettings({ recordSaveSeconds: Number(e.target.value) });
+          }
         }}
       >
-        {SAVE_PRESETS.map((s) => (
-          <option key={s} value={s}>{s < 60 ? `${s} seconds` : `${s / 60} min`}</option>
+        {SAVE_PRESETS.map((p) => (
+          <option key={p.seconds} value={p.seconds}>{p.label}</option>
         ))}
-        <option value="custom">Custom…</option>
+        <option value="custom">Custom (minutes)…</option>
       </select>
       {showCustom && (
         <div className="row interval-custom">
           <input
             className="input"
             type="number"
-            min={30}
-            max={7200}
-            step={5}
-            value={custom}
-            aria-label="Custom interval in seconds"
+            min={1}
+            max={240}
+            step={1}
+            value={customMinutes}
+            aria-label="Custom interval in minutes"
             onChange={(e) => {
-              const n = Number(e.target.value);
-              setCustom(n);
-              if (Number.isFinite(n) && n >= 30 && n <= 7200) updateSettings({ recordSaveSeconds: Math.round(n) });
+              const raw = e.target.value;
+              setCustomMinutes(raw);
+              const n = Number(raw);
+              if (raw.trim() !== "" && Number.isFinite(n) && n >= 1 && n <= 240) {
+                updateSettings({ recordSaveSeconds: Math.round(n * 60) });
+              }
+            }}
+            onBlur={() => {
+              const n = Number(customMinutes);
+              const clamped = Number.isFinite(n) && n >= 1 ? Math.min(240, Math.round(n)) : Math.max(1, Math.round(value / 60));
+              setCustomMinutes(String(clamped));
+              updateSettings({ recordSaveSeconds: clamped * 60 });
             }}
           />
-          <span className="muted">seconds</span>
+          <span className="muted">minutes</span>
         </div>
       )}
     </div>
@@ -221,7 +241,7 @@ function Capture() {
       <SettingRow title="Hassle-free recording" desc="Record every stream in real time from the moment it opens. The recorder shares the video capture with the rolling buffer. Turn it off to stop recording; the current segment is still saved.">
         <Switch label="Hassle-free recording" checked={settings.autoRecord} onChange={(autoRecord) => updateSettings({ autoRecord })} />
       </SettingRow>
-      <SettingRow title="Auto-save recording every" desc="Pick a preset or set any interval from 30 seconds to 2 hours. Each save closes one clip and starts a fresh recording.">
+      <SettingRow title="Auto-save recording every" desc="Choose 15, 30, 45 min, 1 hour, or set any custom duration in minutes (1–240 min). Each save finishes one clip and starts a fresh recording seamlessly.">
         <RecordInterval />
       </SettingRow>
       <SettingRow title="Recording quality" desc="Full HD raises the bitrate and lets HLS use a 1080p rendition. Smooth keeps the lower bitrate and caps HLS to a small rendition when several streams run at once.">

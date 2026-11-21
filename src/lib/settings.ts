@@ -108,7 +108,7 @@ export const DEFAULT_SETTINGS: Settings = {
   rollingBuffer: true,
   captureSeconds: 30,
   autoRecord: false,
-  recordSaveSeconds: 300,
+  recordSaveSeconds: 900,
   recordQuality: "fullhd",
   afterClip: "stay",
   defaultLayout: "fill",
@@ -210,7 +210,7 @@ export function loadSettings(): Settings {
     if (typeof legacy === "number" && legacy > 0) loaded.recordSaveSeconds = Math.round(legacy * 60);
   });
   delete (loaded as Partial<Record<"recordSaveMinutes", unknown>>).recordSaveMinutes;
-  loaded.recordSaveSeconds = Math.min(7200, Math.max(30, Math.round(Number(loaded.recordSaveSeconds) || 300)));
+  loaded.recordSaveSeconds = Math.min(14400, Math.max(30, Math.round(Number(loaded.recordSaveSeconds) || 900)));
   if (loaded.recordQuality !== "smooth" && loaded.recordQuality !== "fullhd") loaded.recordQuality = "fullhd";
   // Render filenames dropped the date; only the shipped default is rewritten, custom patterns stay.
   if (loaded.fileNamePattern === "{title} {date}") loaded.fileNamePattern = "{title}";

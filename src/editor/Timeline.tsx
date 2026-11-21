@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as RPointerEvent, type KeyboardEvent as RKeyboardEvent } from "react";
-import { Captions, Film, Image as ImageIcon, Music, Trash2, Type, ZoomIn, ZoomOut, Scissors } from "lucide-react";
+import { Captions, Film, Image as ImageIcon, Music, Scissors, Sparkles, Trash2, Type, ZoomIn, ZoomOut } from "lucide-react";
 import type { Project } from "../lib/types";
-import { clipLength, clipStarts } from "../lib/project";
+import { activeClipAt, clipLength, clipStarts } from "../lib/project";
 import { useStore } from "../store";
 import type { Player } from "./player";
 import { useClock } from "./player";
@@ -42,6 +42,9 @@ export function Timeline({
   onSelect,
   onSplit,
   onDelete,
+  onAddText,
+  onDetectAi,
+  detectingAi = false,
 }: {
   project: Project;
   player: Player;
@@ -49,6 +52,9 @@ export function Timeline({
   onSelect: (s: Selection) => void;
   onSplit: () => void;
   onDelete?: () => void;
+  onAddText?: () => void;
+  onDetectAi?: () => void;
+  detectingAi?: boolean;
 }) {
   const { editProject } = useStore();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -57,6 +63,11 @@ export function Timeline({
   const [viewW, setViewW] = useState(0);
   const duration = player.duration;
   const drag = useDrag();
+  const targetVideo =
+    (selection?.kind === "video" ? project.video.find((v) => v.id === selection.id) : undefined) ??
+    activeClipAt(project, player.clock.time)?.clip ??
+    project.video[0] ??
+    null;
 
   // Fit the whole project in view until the user zooms.
   useLayoutEffect(() => {
@@ -105,27 +116,69 @@ export function Timeline({
   return (
     <div className="timeline">
       <div className="timeline-tools">
-        <button className="btn ghost sm" onClick={onSplit} title="Split at the playhead (S)">
-          <Scissors className="ic" /> Split
-        </button>
-        {onDelete && (
-          <button className="btn ghost sm" onClick={onDelete} disabled={!selection} title="Delete selected item (Del)">
-            <Trash2 className="ic" /> Delete
+        <div className="timeline-tools-group">
+          <button className="btn ghost sm" onClick={onSplit} title="Split at the playhead (S)">
+            <Scissors className="ic" /> Split
           </button>
-        )}
-        <span className="muted tl-hint">
-          Drag edges to trim · <kbd>Space</kbd> play · <kbd>S</kbd> split · <kbd>Del</kbd> remove
-        </span>
-        <span className="grow" />
-        <button className="btn plain icon sm" onClick={() => zoom(1 / 1.5)} aria-label="Zoom out" title="Zoom out">
-          <ZoomOut className="ic" />
-        </button>
-        <button className="btn ghost sm" onClick={() => setUserZoomed(false)} title="Fit the whole timeline">
-          Fit
-        </button>
-        <button className="btn accent sm" onClick={() => zoom(1.5)} aria-label="Zoom in" title="Zoom in (+)">
-          <ZoomIn className="ic" /> Zoom in
-        </button>
+          {onDelete && (
+            <button className="btn ghost sm" onClick={onDelete} disabled={!selection} title="Delete selected item (Del)">
+              <Trash2 className="ic" /> Delete
+            </button>
+          )}
+          {onAddText && (
+            <button className="btn ghost sm" onClick={onAddText} disabled={duration <= 0} title="Add text overlay at playhead">
+              <Type className="ic" /> + Text
+            </button>
+          )}
+          <span className="timeline-sep" aria-hidden="true" />
+          <button className="btn plain icon sm" onClick={() => zoom(1 / 1.5)} aria-label="Zoom out" title="Zoom out">
+            <ZoomOut className="ic" />
+          </button>
+          <button className="btn ghost sm" onClick={() => setUserZoomed(false)} title="Fit the whole timeline">
+            Fit
+          </button>
+          <button className="btn plain icon sm" onClick={() => zoom(1.5)} aria-label="Zoom in" title="Zoom in (+)">
+            <ZoomIn className="ic" />
+          </button>
+        </div>
+        <div className="timeline-tools-right">
+          {onDetectAi && (
+            <button
+              className="btn ghost sm"
+              onClick={onDetectAi}
+              disabled={detectingAi || project.video.length === 0}
+              title="Auto-detect streamer facecam with AI"
+            >
+              <Sparkles className="ic" /> {detectingAi ? "Detecting…" : "Detect AI"}
+            </button>
+          )}
+          {targetVideo && (
+            <label className="timeline-speed">
+              <span className="timeline-speed-label">Speed</span>
+              <select
+                className="select timeline-speed-select"
+                aria-label="Clip speed"
+                value={targetVideo.speed}
+                onChange={(e) => {
+                  const speed = Number(e.target.value);
+                  editProject(
+                    (p) => ({
+                      ...p,
+                      video: p.video.map((v) => (v.id === targetVideo.id ? { ...v, speed } : v)),
+                    }),
+                    `sp-${targetVideo.id}`,
+                  );
+                }}
+              >
+                {[0.5, 0.75, 1, 1.25, 1.5, 2].map((v) => (
+                  <option key={v} value={v}>
+                    {v}×
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+        </div>
       </div>
       <div className="tl-scroll" ref={scrollRef}>
         <div className="tl-inner" style={{ width: width + HEAD_W }}>

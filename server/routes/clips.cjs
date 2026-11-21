@@ -32,10 +32,21 @@ async function apiClipFinalize(req, res, query) {
       onField() {},
     });
     const out = path.join(dir, "clip.mp4");
+    const srcInfo = inPoint === 0 ? await probe(input) : null;
     const args = ["-y", "-hide_banner", "-loglevel", "error"];
     if (inPoint > 0) args.push("-ss", inPoint.toFixed(3));
-    args.push("-i", input, "-t", duration.toFixed(3), ...(await encoderArgs()));
-    args.push("-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", out);
+    args.push("-i", input, "-t", duration.toFixed(3));
+    if (inPoint === 0 && srcInfo?.hasVideo && srcInfo.videoCodec === "h264") {
+      args.push("-c:v", "copy");
+    } else {
+      args.push(...(await encoderArgs()));
+    }
+    if (inPoint === 0 && srcInfo?.hasAudio && srcInfo.audioCodec === "aac") {
+      args.push("-c:a", "copy");
+    } else {
+      args.push("-c:a", "aac", "-b:a", "160k");
+    }
+    args.push("-movflags", "+faststart", out);
     const r = await run("ffmpeg", args, { timeout: 600000 });
     if (r.code !== 0 || !fs.existsSync(out)) {
       cleanup();

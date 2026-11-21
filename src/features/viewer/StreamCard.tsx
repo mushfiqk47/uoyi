@@ -4,7 +4,7 @@ import { Clock, Circle, Save, Scissors, Sparkles, Square, X } from "lucide-react
 import { useViewerStore } from "../../store";
 import type { Clip, Stream, ViralDetails } from "../../lib/types";
 import {
-  canClip, captureTracks, captureVideo, LiveRecorder, recordBitrate, RollingRecorder, type LiveSegment,
+  canClip, captureTracks, captureVideo, LiveRecorder, recordBitrate, recordFrameRate, RollingRecorder, type LiveSegment,
 } from "../../lib/recorder";
 import { getCaptureStream } from "../../lib/captureRegistry";
 import { forgetUrl, putBlob } from "../../lib/db";
@@ -17,6 +17,45 @@ import { judgeMoment, type MomentVerdict } from "../../lib/ai/openai";
 import { recordAudioChunk } from "../../lib/ai/audioSample";
 import { generateCaptionsForBlob } from "../../lib/ai/captions";
 import type { TileApi } from "./types";
+
+function pickBestHlsLevel(
+  levels: ReadonlyArray<{ height?: number; frameRate?: number; bitrate?: number }>,
+  maxHeight: number,
+): number {
+  if (!levels.length) return -1;
+  const indices = levels.map((_, i) => i);
+  const withinCap = indices.filter((i) => {
+    const h = levels[i]?.height || 0;
+    return h > 0 && h <= maxHeight;
+  });
+  const pool = withinCap.length ? withinCap : indices;
+  pool.sort((a, b) => {
+    const la = levels[a];
+    const lb = levels[b];
+    const ha = la?.height || 0;
+    const hb = lb?.height || 0;
+    if (withinCap.length ? hb !== ha : ha !== hb) {
+      return withinCap.length ? hb - ha : ha - hb;
+    }
+    const fa = la?.frameRate || 0;
+    const fb = lb?.frameRate || 0;
+    if (fb !== fa) return fb - fa;
+    return (lb?.bitrate || 0) - (la?.bitrate || 0);
+  });
+  return pool[0] ?? -1;
+}
+
+function applyHlsQuality(hls: Hls, quality: "fullhd" | "smooth", immediate: boolean): void {
+  const fullHd = quality === "fullhd";
+  hls.capLevelToPlayerSize = !fullHd;
+  const best = pickBestHlsLevel(hls.levels, fullHd ? 1080 : 720);
+  if (best >= 0) {
+    hls.autoLevelCapping = best;
+    hls.startLevel = best;
+    hls.nextLevel = best;
+    if (immediate) hls.currentLevel = best;
+  }
+}
 
 export const StreamCard = memo(function StreamCard({
   stream,
@@ -37,6 +76,8 @@ export const StreamCard = memo(function StreamCard({
   const liveRecRef = useRef<LiveRecorder | null>(null);
   const captureRef = useRef<MediaStream | null>(null);
   const autoStartedRef = useRef(false);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
   const [recording, setRecording] = useState(false);
   const [saving, setSaving] = useState(false);
   const [recordSeconds, setRecordSeconds] = useState(0);
@@ -91,22 +132,24 @@ export const StreamCard = memo(function StreamCard({
         const { default: HlsModule } = await import("hls.js");
         if (!alive) return;
         if (HlsModule.isSupported()) {
+          const fullHd = settingsRef.current.recordQuality === "fullhd";
           const hls = new HlsModule({
-            // Stay closer to the live edge and catch up automatically when the tab falls behind,
-            // otherwise the "live" recording drifts further behind real time the longer it runs.
-            liveSyncDurationCount: 2,
-            liveMaxLatencyDurationCount: 6,
-            // Catching up at 1.5x means 50% more frames decoded and encoded per second at 1080p.
-            maxLiveSyncPlaybackRate: 1.1,
-            backBufferLength: 10,
-            maxBufferLength: 15,
-            maxMaxBufferLength: 30,
-            // Full HD capture needs the real ABR ladder, not the lowest level a 2x2 surface suggests.
-            capLevelToPlayerSize: settings.recordQuality !== "fullhd",
+            enableWorker: true,
+            lowLatencyMode: false,
+            liveSyncDurationCount: 3,
+            liveMaxLatencyDurationCount: 10,
+            maxLiveSyncPlaybackRate: 1.0,
+            backBufferLength: 15,
+            maxBufferLength: 30,
+            maxMaxBufferLength: 60,
+            abrEwmaDefaultEstimate: fullHd ? 10_000_000 : 2_500_000,
+            // Full HD capture needs the real ABR ladder, not the lowest level a small decode box suggests.
+            capLevelToPlayerSize: !fullHd,
           });
           hlsRef.current = hls;
           hls.on(HlsModule.Events.MANIFEST_PARSED, (_e, data) => {
             levelsRef.current = data.levels.map((l) => l.height || 0);
+            applyHlsQuality(hls, settingsRef.current.recordQuality, true);
             v.play().catch(() => {});
           });
           hls.on(HlsModule.Events.LEVEL_LOADED, (_e, data) => setLive(data.details.live));
@@ -206,6 +249,12 @@ export const StreamCard = memo(function StreamCard({
     return () => clearInterval(t);
   }, [state, reloadKey]);
 
+  // Keep active HLS rendition quality synced when the user switches Full HD / Smooth in Settings.
+  useEffect(() => {
+    const hls = hlsRef.current;
+    if (hls && hls.levels.length) applyHlsQuality(hls, settings.recordQuality, false);
+  }, [settings.recordQuality]);
+
   // The rolling buffer, started once frames flow.
   useEffect(() => {
     if (state !== "playing" || !settings.rollingBuffer) return;
@@ -214,7 +263,11 @@ export const StreamCard = memo(function StreamCard({
       return;
     }
     try {
-      recRef.current = new RollingRecorder(videoRef.current!, settings.captureSeconds, recordBitrate(settings.recordQuality));
+      const targetFps = recordFrameRate(settings.recordQuality);
+      const rollBitrate = settings.recordQuality === "fullhd" ? 4_000_000 : 2_000_000;
+      const source = captureRef.current ?? videoRef.current!;
+      recRef.current = new RollingRecorder(source, settings.captureSeconds, rollBitrate, targetFps);
+      captureRef.current = recRef.current.mediaStream();
       setRecError("");
       logActivity("info", `Recording ${stream.title} (rolling ${settings.captureSeconds}s buffer)`);
     } catch (e) {
@@ -227,7 +280,7 @@ export const StreamCard = memo(function StreamCard({
       recRef.current = null;
       setBuffered(0);
     };
-  }, [state, settings.rollingBuffer, settings.captureSeconds]);
+  }, [state, settings.rollingBuffer, settings.captureSeconds, settings.recordQuality]);
 
   useEffect(() => {
     const t = setInterval(() => {
@@ -242,26 +295,20 @@ export const StreamCard = memo(function StreamCard({
   // stream, so recording never makes the player decode the video twice.
   const forceFullHdLevel = () => {
     const hls = hlsRef.current;
-    if (!hls || settings.recordQuality !== "fullhd") return;
-    const heights = levelsRef.current.length ? levelsRef.current : hls.levels.map((l) => l.height || 0);
-    let best = -1;
-    let bestHeight = 0;
-    heights.forEach((h, i) => {
-      if (h <= 1080 && h > bestHeight) { bestHeight = h; best = i; }
-    });
-    // Cap automatic selection instead of pinning currentLevel. Setting currentLevel flushes
-    // the whole buffer and playback visibly stalls; a cap keeps 1080p when the connection
-    // allows it and lets ABR drop a level when it does not, so the stream keeps flowing.
-    if (best >= 0) hls.autoLevelCapping = best;
+    if (!hls || !hls.levels.length) return;
+    applyHlsQuality(hls, settings.recordQuality, false);
   };
   const releaseLevel = () => {
-    if (hlsRef.current && settings.recordQuality === "fullhd") hlsRef.current.autoLevelCapping = -1;
+    const hls = hlsRef.current;
+    if (!hls || !hls.levels.length) return;
+    applyHlsQuality(hls, settings.recordQuality, false);
   };
 
   const getCapture = (): MediaStream | null => {
     const v = videoRef.current;
     if (!v) return null;
-    const media = captureVideo(v, recRef.current?.mediaStream() ?? captureRef.current);
+    const targetFps = recordFrameRate(settings.recordQuality);
+    const media = captureVideo(v, recRef.current?.mediaStream() ?? captureRef.current, targetFps);
     captureRef.current = media;
     return media;
   };
@@ -304,17 +351,22 @@ export const StreamCard = memo(function StreamCard({
     logActivity("success", `Auto-saved ${Math.round(seg.seconds)}s recording of ${stream.title}`);
     toast(`Recording saved to Records: ${stream.title}`, "success", { label: "Records", run: () => go("recommend") });
     // Recordings stay raw captures. Auto-captions are for uploaded/manual clips in Clips only.
-    // Best-effort MP4 remux on the local API. The clip stays visible even when this fails.
-    void finalizeClipBlob(seg.blob, 0, seg.seconds).then(async (final) => {
-      if (!final) return;
-      try {
-        await putBlob(blobKey, final.blob);
-        forgetUrl(blobKey);
-        updateClip(id, { seconds: final.duration, duration: final.duration });
-      } catch {
-        /* keep the original WebM */
-      }
-    }).catch(() => {});
+    // Best-effort MP4 remux on the local API when it's fast (H.264 stream-copy or short clip).
+    // Skip heavy CPU re-encoding of multi-minute non-H.264 segments so the next live segment doesn't lag.
+    const isH264 = /h264|avc1|mp4/i.test(seg.mime);
+    const shouldFinalize = (isH264 || seg.seconds <= 180) && seg.blob.size <= 200 * 1024 * 1024;
+    if (shouldFinalize) {
+      void finalizeClipBlob(seg.blob, 0, seg.seconds).then(async (final) => {
+        if (!final) return;
+        try {
+          await putBlob(blobKey, final.blob);
+          forgetUrl(blobKey);
+          updateClip(id, { seconds: final.duration, duration: final.duration });
+        } catch {
+          /* keep the original recording */
+        }
+      }).catch(() => {});
+    }
   };
   const saveSegmentRef = useRef(saveSegment);
   saveSegmentRef.current = saveSegment;
@@ -555,7 +607,7 @@ export const StreamCard = memo(function StreamCard({
 
   return (
     <article className="rec-card" aria-label={stream.title}>
-      <video ref={videoRef} playsInline className="stream-headless-video" />
+      <video ref={videoRef} playsInline disablePictureInPicture className="stream-headless-video" />
       <div className="rec-head">
         {live ? (
           <span className="chip live">

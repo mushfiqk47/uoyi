@@ -21,18 +21,18 @@ afterEach(() => {
 });
 
 describe("hassle-free recording defaults", () => {
-  it("starts off with a five minute auto-save interval in Full HD", () => {
+  it("starts off with a fifteen minute auto-save interval in Full HD", () => {
     expect(DEFAULT_SETTINGS.autoRecord).toBe(false);
-    expect(DEFAULT_SETTINGS.recordSaveSeconds).toBe(300);
+    expect(DEFAULT_SETTINGS.recordSaveSeconds).toBe(900);
     expect(DEFAULT_SETTINGS.recordQuality).toBe("fullhd");
-    expect(loadSettings().recordSaveSeconds).toBe(300);
+    expect(loadSettings().recordSaveSeconds).toBe(900);
   });
 
   it("keeps a custom interval from saved settings", () => {
-    store.set("clipkit.settings.v1", JSON.stringify({ autoRecord: true, recordSaveSeconds: 45 }));
+    store.set("clipkit.settings.v1", JSON.stringify({ autoRecord: true, recordSaveSeconds: 2700 }));
     const s = loadSettings();
     expect(s.autoRecord).toBe(true);
-    expect(s.recordSaveSeconds).toBe(45);
+    expect(s.recordSaveSeconds).toBe(2700);
   });
 
   it("migrates the old preset in minutes to seconds", () => {
@@ -43,6 +43,8 @@ describe("hassle-free recording defaults", () => {
   it("clamps intervals outside the supported range", () => {
     store.set("clipkit.settings.v1", JSON.stringify({ recordSaveSeconds: 5 }));
     expect(loadSettings().recordSaveSeconds).toBe(30);
+    store.set("clipkit.settings.v1", JSON.stringify({ recordSaveSeconds: 20000 }));
+    expect(loadSettings().recordSaveSeconds).toBe(14400);
   });
 
   it("defaults to AI Studio Gemini (gemini-4-hydrogen) and upgrades legacy keyless Gemini settings", () => {

@@ -8,6 +8,7 @@ import { loadClips, saveClips } from "./platform/storage/clipRepository";
 import { MIGRATIONS, STORAGE_KEYS } from "./platform/storage/keys";
 import { once } from "./platform/storage/migrations";
 import { cloneLook, hookTextItem, lookFromSettings, lookOf, newProject, postCopyText } from "./lib/project";
+import { missingPremadeTemplates } from "./lib/templates";
 import { generateCaptionsForBlob } from "./lib/ai/captions";
 import { useRenderQueue } from "./queue/useRenderQueue";
 
@@ -50,6 +51,7 @@ interface Store {
   duplicateTemplate(id: string): void;
   deleteTemplate(id: string): void;
   applyTemplate(id: string): void;
+  restorePremadeTemplates(): number;
 
   enqueue(title: string, fileName: string): void;
 
@@ -322,6 +324,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   // ---- templates
   const [templates, setTemplates] = usePersisted<Template[]>(STORAGE_KEYS.templates, []);
+  const templatesRef = useRef(templates);
+  templatesRef.current = templates;
+  useEffect(() => {
+    once(MIGRATIONS.premadeTemplates, () => {
+      const missing = missingPremadeTemplates(templatesRef.current);
+      if (missing.length) setTemplates((ts) => [...ts, ...missing]);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ---- project with undo/redo
   const [project, setProjectState] = usePersisted<Project | null>(STORAGE_KEYS.project, null);
@@ -534,6 +545,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     },
     [templates, editProject],
   );
+  const restorePremadeTemplates = useCallback(() => {
+    const missing = missingPremadeTemplates(templatesRef.current);
+    if (!missing.length) return 0;
+    setTemplates((ts) => [...ts, ...missing]);
+    return missing.length;
+  }, [setTemplates]);
 
   const renderQueue = useRenderQueue({ projectRef, settings, updateClip, toast, showQueue });
   const { jobs, enqueue, cancelJob, retryJob, moveJob, removeJob, markDownloaded, queuePaused, setQueuePaused } = renderQueue;
@@ -601,6 +618,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       duplicateTemplate,
       deleteTemplate,
       applyTemplate,
+      restorePremadeTemplates,
       enqueue,
       toasts,
       toast,
@@ -609,7 +627,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [
       settings, updateSettings, screen, streams, addStream, removeStream, updateStream,
       project, setProject, editProject, undo, redo, past.length, future.length, openClip, startProject, templates, saveTemplate,
-      updateTemplate, overwriteTemplate, duplicateTemplate, deleteTemplate, applyTemplate, enqueue,
+      updateTemplate, overwriteTemplate, duplicateTemplate, deleteTemplate, applyTemplate, restorePremadeTemplates, enqueue,
       toasts, toast, dismissToast,
     ],
   );

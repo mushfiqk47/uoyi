@@ -142,13 +142,14 @@ function SetupPanel() {
   );
 
   const installAllMissing = useCallback(async () => {
+    // Required tools only — optional ones (Streamlink, PySceneDetect, OpenCV) are explicit choices.
     for (const item of items) {
-      if (item.installed || busy.includes(item.id)) continue;
+      if (item.installed || !item.required || busy.includes(item.id)) continue;
       await install(item.id, item.label);
     }
   }, [items, busy, install]);
 
-  const pending = items.filter((i) => !i.installed);
+  const pending = items.filter((i) => !i.installed && i.required);
   const sourceChip = (item: SetupItem) =>
     item.installed ? (
       <span className="chip success">{item.source === "app" ? "app bin" : "on PATH"}</span>
@@ -166,7 +167,7 @@ function SetupPanel() {
       </p>
       <div className="row" style={{ marginBottom: 12 }}>
         <button className="btn accent sm" disabled={busy.length > 0 || pending.length === 0} onClick={() => void installAllMissing()}>
-          {busy.length > 0 ? "Setting up…" : pending.length > 0 ? `Install everything missing (${pending.length})` : "Everything is installed"}
+          {busy.length > 0 ? "Setting up…" : pending.length > 0 ? `Install required (${pending.length})` : "All required tools installed"}
         </button>
         <button className="btn plain sm" disabled={busy.length > 0} onClick={() => void refresh()}>
           Re-check system

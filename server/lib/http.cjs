@@ -122,4 +122,4 @@ function methodAndPath(req) {
   return { method: req.method || "GET", pathname: url.pathname, query: url.searchParams };
 }
 
-module.exports = { json, fail, readBody, readJson, parseRange, sendFile, methodAndPath };
+module.exports = { json, fail, readJson, parseRange, sendFile, methodAndPath };

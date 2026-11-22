@@ -127,10 +127,8 @@ async function writeOverlayAss(dir, project, width = 1080, height = 1920) {
 
 module.exports = {
   clampNumber,
-  assTime,
   assColor,
   assFontName,
-  assText,
   filterPath,
   buildOverlayAssContent,
   writeOverlayAss,

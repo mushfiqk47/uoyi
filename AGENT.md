@@ -600,6 +600,27 @@ Living guide for AI agents working in this repository. **Keep this file updated 
 - **Graphify action:** Not run (CLI unavailable in this environment, per earlier sessions).
 - **Open issues/follow-ups:** evermeet.cx URLs are redirects to the latest build — if they change shape, pin a versioned URL. Linux tar.xz needs `xz-utils` present (clear error message added). FFmpeg Windows install pulls ~80 MB — considered offering an "essentials vs full" choice later.
 
+### 2026-11-23 — Git hygiene + product-ready hardening for any machine
+- **Intent/request:** "update git ignore, and improve the system so it works with any system, not just my system — full product ready."
+- **Changes (files + summary):**
+  - **Git:** untracked 7 junk entries the sync commit had captured from a temp dir under mangled root paths (`UsersmushfiqAppDataLocalTempsetup-test/…`, `git rm --cached`); `.gitignore` gains `*.part` (partial downloads) and `.zcode/`. Tracked tree is now 208 files / ~5 MB with only `models/yunet.onnx` as a binary.
+  - **Platform selection made testable:** `runtimeAssetCandidates(platform, arch)` (audiocpp) and new `ytDlpAssetName(platform, arch)` (tools) are pure functions; new `server/lib/tools.test.cjs` covers win32/darwin/linux × x64/arm64 for both plus `findFileInTree` nested-locate and the `.exe` suffix rule.
+  - **Setup panel behavior:** "Install required (N)" now installs only `required` items — optional pip tools stay explicit per-item choices; status probe verified live (6 items, correct sources).
+  - **docs/01-quick-start.md rewritten** for the product flow: npm install/dev → Settings → Setup panel (per-OS provisioning explained) → AI config → first steps; removed stale `../web-server.cjs`, 5173-port, and nemo-speech references; verify via `/api/health` or Re-check system.
+- **Decisions/rationale:** platform/arch selection as pure functions lets CI prove every OS path without running on those OSes. Install-all restricted to required tools because optional pip packages can be large and unwanted; the row buttons remain for opting in. Git junk was untracked rather than history-rewritten — the user can commit the cleanup as a normal change.
+- **Commands run & results:** `npm run test:server` → 35/35 (4 new). `npx tsc --noEmit`, `npm test` (95), `npm run build` → passed. Live `/api/setup/status` + `/api/health` → correct per-tool state.
+- **Graphify action:** `graphify update .` → rebuilt (1039 nodes, 3273 edges, 35 communities; curated graph backed up to `graphify-out/2026-11-23/`). New `audiocpp.cjs` and `tools.cjs` appear as community hubs.
+- **Open issues/follow-ups:** macOS/Linux paths are code-reviewed + unit-tested but not executed on those OSes (Windows is the dev machine); the Setup panel job log will show the exact failing layer if an OS-specific source ever breaks.
+
+### 2026-11-23 — Codebase cleanup: unused-file audit + dead exports
+- **Intent/request:** "clean up code base unused files and full clean code file system."
+- **Findings & changes:**
+  - **No orphan files**: every file in `src/` and `server/` (126 scanned) is referenced; all `public/` assets (logo, both logo marks, 7 fonts) and `scripts/facecam_detect.py` have live references; `mimo_v26_heretic_ollama_colab.ipynb` stays (documented Colab AI provider, docs/11); `metadata.json` stays (AI Studio import metadata).
+  - **Dead exports trimmed** (functions kept where used internally): `ass.cjs` −`assTime`/`assText`, `gemini.cjs` −`GEMINI_TRANSCRIBE_MODEL`, `http.cjs` −`readBody`, `audiocpp.cjs` −`PACKAGES`/`audioCppRoot`/`binDir`/`modelDir`/`latestRuntime`/`zipLooksValid`/`psQuote` from `module.exports`. `tsc --noEmit` (noUnusedLocals) already guarantees the frontend is clean.
+  - **graphify-out slimmed**: deleted the 2026-11-18/20 curated-graph backups (kept 2026-11-23 as rollback), gitignored `graphify-out/2026-*/`, `graphify-out/cache/`, and `.graphify_*` state files; untracked them from git.
+- **Verification:** `node --check` all edited files → OK; `npm run test:server` → 35/35; `npx tsc --noEmit`, `npm test` (95), `npm run build` → passed. Tracked tree now ~4.1 MB across ~200 files.
+- **Open issues/follow-ups:** a full unused-export sweep of `src/lib` was skipped deliberately — Vite tree-shakes unused exports at build, so there is no runtime cost and the churn risk outweighs the benefit.
+
 ### Template for future entries
 - **Date/time/session:**
 - **Intent/request:**

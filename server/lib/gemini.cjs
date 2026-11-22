@@ -456,7 +456,6 @@ async function detectFacecamWithGemini(imageBase64) {
 module.exports = {
   GEMINI_DEFAULT_MODEL,
   GEMINI_FALLBACK_MODEL,
-  GEMINI_TRANSCRIBE_MODEL,
   hasGeminiKey,
   resolveGeminiModel,
   generateWithFallback,

@@ -57,8 +57,15 @@ async function findFileInTree(root, predicate) {
   return hits;
 }
 
+/** Official yt-dlp release asset for a platform/arch. */
+function ytDlpAssetName(platform = process.platform, arch = process.arch) {
+  if (platform === "win32") return "yt-dlp.exe";
+  if (platform === "darwin") return "yt-dlp_macos";
+  return arch === "arm64" ? "yt-dlp_linux_aarch64" : "yt-dlp_linux";
+}
+
 async function installYtDlp(onLog = () => {}) {
-  const asset = process.platform === "win32" ? "yt-dlp.exe" : process.platform === "darwin" ? "yt-dlp_macos" : process.arch === "arm64" ? "yt-dlp_linux_aarch64" : "yt-dlp_linux";
+  const asset = ytDlpAssetName();
   await fsp.mkdir(TOOLS_DIR, { recursive: true });
   const dest = localToolPath("yt-dlp");
   onLog(`Downloading yt-dlp (${asset})…`, 0);
@@ -258,4 +265,4 @@ async function toolInstalled(id) {
   return false;
 }
 
-module.exports = { setupStatus, installerFor, toolInstalled, localToolPath, findFileInTree, TOOLS_DIR };
+module.exports = { setupStatus, installerFor, toolInstalled, localToolPath, findFileInTree, ytDlpAssetName, TOOLS_DIR };

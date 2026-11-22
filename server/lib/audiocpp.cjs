@@ -540,13 +540,13 @@ async function extractRuntime(zipPath, onLog = () => {}) {
   }
 }
 
-/** Prebuilt runtime asset base names for this machine (release assets carry an `audio-<tag>-` prefix). */
-function runtimeAssetCandidates() {
-  if (process.platform === "win32") return ["bin-windows-x64-cpu-portable.zip"];
-  if (process.platform === "darwin") {
-    return [process.arch === "arm64" ? "bin-macos-arm64-metal.tar.gz" : "bin-macos-x64-metal.tar.gz"];
+/** Prebuilt runtime asset base names for a machine (release assets carry an `audio-<tag>-` prefix). */
+function runtimeAssetCandidates(platform = process.platform, arch = process.arch) {
+  if (platform === "win32") return ["bin-windows-x64-cpu-portable.zip"];
+  if (platform === "darwin") {
+    return [arch === "arm64" ? "bin-macos-arm64-metal.tar.gz" : "bin-macos-x64-metal.tar.gz"];
   }
-  if (process.arch === "arm64") return ["bin-ubuntu-arm64-cpu-portable.tar.gz", "bin-ubuntu-x64-cpu-portable.tar.gz"];
+  if (arch === "arm64") return ["bin-ubuntu-arm64-cpu-portable.tar.gz", "bin-ubuntu-x64-cpu-portable.tar.gz"];
   return ["bin-ubuntu-x64-cpu-portable.tar.gz"];
 }
 
@@ -782,18 +782,12 @@ async function transcribe(wav, modelId, language, workDir) {
 
 module.exports = {
   AUDIOCPP_VERSION,
-  PACKAGES,
   catalogEntries,
-  audioCppRoot,
-  binDir,
-  modelDir,
   modelsRoot,
   resolveCli,
   ensureRuntime,
-  latestRuntime,
-  zipLooksValid,
+  runtimeAssetCandidates,
   extractZipNode,
-  psQuote,
   downloadFile,
   packageFor,
   modelFilePath,

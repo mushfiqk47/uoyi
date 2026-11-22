@@ -2,12 +2,53 @@
 
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
+const path = require("node:path");
 const { Readable } = require("node:stream");
 const { pipeline } = require("node:stream/promises");
-const { run, hasTool, probe } = require("../lib/proc.cjs");
-const { ensureCache, mediaFile } = require("../lib/files.cjs");
+const { run, hasTool, probe, resolveLocalTool, isSandboxedLinuxBinary } = require("../lib/proc.cjs");
+const { ensureCache, mediaFile, isHiddenHomePath } = require("../lib/files.cjs");
 const { id } = require("../lib/id.cjs");
 const { mediaJobs } = require("../state.cjs");
+
+let ytDlpHiddenHomeDenied = false;
+
+function isPermissionError(stderr) {
+  return /\b(permission denied|errno 13|eacces|eperm|operation not permitted|unable to open for writing|read-only file system)\b/i.test(
+    String(stderr || ""),
+  );
+}
+
+function summarizeStderr(stderr, fallback = "yt-dlp failed") {
+  const lines = String(stderr || "")
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  return lines.slice(-2).join(" ") || fallback;
+}
+
+function buildYtDlpArgs(file, url, ffmpegPath = resolveLocalTool("ffmpeg")) {
+  const args = [
+    "--no-playlist",
+    "-f", "bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[height<=720]/bv*+ba/b",
+    "--merge-output-format", "mp4",
+  ];
+  if (ffmpegPath) {
+    args.push("--ffmpeg-location", path.dirname(ffmpegPath));
+  }
+  args.push("-o", file, url);
+  return args;
+}
+
+async function cleanupMediaPrefix(dir, mediaId) {
+  if (!dir || !mediaId) return;
+  const prefix = `media-${mediaId}`;
+  const entries = await fsp.readdir(dir).catch(() => []);
+  await Promise.all(
+    entries
+      .filter((name) => name.startsWith(prefix))
+      .map((name) => fsp.rm(path.join(dir, name), { force: true }).catch(() => {})),
+  );
+}
 
 function pickPlayable(info) {
   const formats = (info.formats || []).filter((f) => f.url && f.vcodec && f.vcodec !== "none");
@@ -56,15 +97,57 @@ async function downloadDirectMedia(url, file, job) {
   job.status = "ready";
 }
 
+async function runYtDlpPrepare(url, mediaId, initialDir, job) {
+  let targetDir = initialDir;
+  let targetFile = mediaFile(mediaId, "mp4", targetDir);
+  job.file = targetFile;
+
+  let result = await run("yt-dlp", buildYtDlpArgs(targetFile, url), { timeout: 0 });
+  if ((result.code !== 0 || !fs.existsSync(targetFile)) && isPermissionError(result.stderr)) {
+    await cleanupMediaPrefix(targetDir, mediaId);
+    if (isHiddenHomePath(targetDir)) ytDlpHiddenHomeDenied = true;
+    const fallbackDir = await ensureCache({
+      avoidHiddenHome: true,
+      exclude: [targetDir],
+      doNotCacheSelection: true,
+    }).catch(() => null);
+    if (fallbackDir && path.resolve(fallbackDir) !== path.resolve(targetDir)) {
+      targetDir = fallbackDir;
+      targetFile = mediaFile(mediaId, "mp4", targetDir);
+      job.file = targetFile;
+      result = await run("yt-dlp", buildYtDlpArgs(targetFile, url), { timeout: 0 });
+    }
+  }
+
+  if (result.code !== 0 || !fs.existsSync(targetFile)) {
+    await cleanupMediaPrefix(targetDir, mediaId);
+    job.status = "failed";
+    const tail = summarizeStderr(result.stderr);
+    job.err = isPermissionError(result.stderr)
+      ? `Permission denied writing media cache (${tail}). Install standalone yt-dlp in Settings -> Setup & Hardware or check folder write permissions.`
+      : tail;
+    return;
+  }
+
+  job.status = "ready";
+}
+
 async function startPrepare(url, title) {
   const mediaId = id();
-  const file = mediaFile(mediaId);
   const now = Date.now();
+  const detected = await detectDirectMedia(url);
+  const avoidHiddenHome =
+    !detected.direct &&
+    (ytDlpHiddenHomeDenied || isSandboxedLinuxBinary("yt-dlp") || isSandboxedLinuxBinary("ffmpeg"));
+
+  const cacheDir = await ensureCache({
+    avoidHiddenHome,
+    doNotCacheSelection: avoidHiddenHome,
+  });
+  const file = mediaFile(mediaId, "mp4", cacheDir);
   const job = { id: mediaId, status: "preparing", file, mime: "video/mp4", err: "", title: title || url, url, createdAt: now, accessedAt: now };
   mediaJobs.set(mediaId, job);
-  await ensureCache();
 
-  const detected = await detectDirectMedia(url);
   if (detected.direct && detected.kind === "video") {
     downloadDirectMedia(url, file, job).catch((e) => {
       job.status = "failed";
@@ -80,27 +163,19 @@ async function startPrepare(url, title) {
     return job;
   }
 
-  const args = [
-    "--no-playlist",
-    "-f", "bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[height<=720]/bv*+ba/b",
-    "--merge-output-format", "mp4",
-    "-o", file,
-    url,
-  ];
-  run("yt-dlp", args, { timeout: 0 })
-    .then((r) => {
-      if (r.code !== 0 || !fs.existsSync(file)) {
-        job.status = "failed";
-        job.err = (r.stderr || "yt-dlp failed").split("\n").filter(Boolean).slice(-2).join(" ");
-        return;
-      }
-      job.status = "ready";
-    })
-    .catch((e) => {
-      job.status = "failed";
-      job.err = String(e.message || e);
-    });
+  runYtDlpPrepare(url, mediaId, cacheDir, job).catch((e) => {
+    job.status = "failed";
+    job.err = String(e.message || e);
+  });
   return job;
 }
 
-module.exports = { pickPlayable, startPrepare, isDirectMediaUrl, detectDirectMedia };
+module.exports = {
+  pickPlayable,
+  startPrepare,
+  isDirectMediaUrl,
+  detectDirectMedia,
+  isPermissionError,
+  buildYtDlpArgs,
+  cleanupMediaPrefix,
+};

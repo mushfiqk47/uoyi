@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const fsp = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
-const { ytDlpAssetName, findFileInTree, localToolPath } = require("./tools.cjs");
+const { ytDlpAssetName, findFileInTree, localToolPath, setupStatus } = require("./tools.cjs");
 const { runtimeAssetCandidates } = require("./audiocpp.cjs");
 
 test("yt-dlp asset covers every supported platform and arch", () => {
@@ -45,5 +45,16 @@ test("findFileInTree locates binaries in nested archives", async () => {
     assert.equal((await findFileInTree(root, (f) => f === "missing.exe")).length, 0);
   } finally {
     fsp.rm(root, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+test("setupStatus includes quality enhancements (streamlink, scenedetect, opencv) in required tier", async () => {
+  const { items } = await setupStatus();
+  const byId = new Map(items.map((item) => [item.id, item]));
+  for (const id of ["ffmpeg", "streamlink", "scenedetect", "opencv"]) {
+    const item = byId.get(id);
+    assert.ok(item, `missing setup item ${id}`);
+    assert.equal(item.tier, "required");
+    assert.equal(item.required, true);
   }
 });

@@ -71,9 +71,9 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
 
   const tierLabel = (item: SetupItem) => item.tier ?? (item.required ? "required" : "optional");
   const tiers: Array<{ key: "required" | "recommended" | "optional"; title: string; hint: string }> = [
-    { key: "required", title: "Required", hint: "Needed for core recording, clipping, and video exports." },
+    { key: "required", title: "Required", hint: "Needed for core recording, source-quality capture, scene cuts, facecam framing, and video exports." },
     { key: "recommended", title: "Recommended", hint: "Unlocks media link imports and offline word-level speech captions." },
-    { key: "optional", title: "Optional", hint: "Extra live stream capture, visual scene cuts, and facecam framing." },
+    { key: "optional", title: "Optional", hint: "Extra quality and workflow tools." },
   ];
 
   const ramGb = system?.totalRamBytes ? `${Math.round(system.totalRamBytes / 1024 ** 3)} GB RAM` : "";

@@ -46,6 +46,60 @@ function resolveLocalTool(cmd) {
   return null;
 }
 
+/** Resolves a command's actual executable path (app-local tool first, then PATH). */
+function resolveCommandPath(cmd) {
+  const local = resolveLocalTool(cmd);
+  if (local) return local;
+  if (!cmd) return null;
+  if (path.isAbsolute(cmd)) return fs.existsSync(cmd) ? cmd : null;
+  const pathEnv = process.env.PATH || "";
+  const dirs = pathEnv.split(path.delimiter).filter(Boolean);
+  const exts =
+    process.platform === "win32"
+      ? (process.env.PATHEXT || ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean)
+      : [""];
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      const candidate = path.join(dir, ext && !cmd.toLowerCase().endsWith(ext.toLowerCase()) ? `${cmd}${ext}` : cmd);
+      try {
+        const st = fs.statSync(candidate);
+        if (!st.isFile()) continue;
+        if (process.platform !== "win32") {
+          fs.accessSync(candidate, fs.constants.X_OK);
+        }
+        return candidate;
+      } catch {
+        /* keep searching */
+      }
+    }
+  }
+  return null;
+}
+
+/** True when a Linux binary is Snap/Flatpak-confined and cannot access dot-dirs in $HOME (like ~/.local). */
+function isSandboxedLinuxBinary(cmdOrPath, platform = process.platform) {
+  if (platform !== "linux" || !cmdOrPath) return false;
+  const resolved = path.isAbsolute(cmdOrPath) ? cmdOrPath : resolveCommandPath(cmdOrPath);
+  if (!resolved) return false;
+  const pathsToCheck = [resolved];
+  try {
+    const real = fs.realpathSync(resolved);
+    if (real && real !== resolved) pathsToCheck.push(real);
+  } catch {
+    /* ignore broken symlink check */
+  }
+  return pathsToCheck.some((p) => {
+    const norm = String(p).replace(/\\/g, "/");
+    return (
+      norm.startsWith("/snap/") ||
+      norm.startsWith("/var/lib/snapd/") ||
+      norm.startsWith("/app/") ||
+      norm.includes("/flatpak/") ||
+      norm.endsWith("/flatpak-spawn")
+    );
+  });
+}
+
 function run(cmd, args, { timeout = 0, cwd = ROOT, onSpawn, onStdout } = {}) {
   return new Promise((resolve) => {
     let child;
@@ -235,6 +289,8 @@ module.exports = {
   resetToolCaches,
   venvPythonPath,
   resolveLocalTool,
+  resolveCommandPath,
+  isSandboxedLinuxBinary,
   run,
   hasTool,
   findOpenCvPython,

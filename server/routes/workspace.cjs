@@ -5,7 +5,7 @@ const path = require("node:path");
 const { json, fail, readJson, sendFile } = require("../lib/http.cjs");
 const { SESSION_TOKEN, mediaToken, isSameOriginBrowserRequest } = require("../lib/auth.cjs");
 const { buildDiagnosticsReport, log } = require("../lib/logger.cjs");
-const { CACHE } = require("../lib/files.cjs");
+const { CACHE, getCacheDir } = require("../lib/files.cjs");
 const {
   getWorkspaceSummary,
   setWorkspaceConfig,
@@ -96,7 +96,7 @@ async function apiWorkspaceFile(req, res, query) {
   }
   const resolved = path.resolve(filePath);
   const cfg = await getWorkspaceSummary();
-  const allowedRoots = [path.resolve(cfg.workspaceDir), path.resolve(CACHE)];
+  const allowedRoots = [path.resolve(cfg.workspaceDir), path.resolve(CACHE), path.resolve(getCacheDir())];
   if (!allowedRoots.some((root) => resolved === root || resolved.startsWith(root + path.sep))) {
     return fail(res, 403, "Access outside workspace is blocked.", "FORBIDDEN", req);
   }

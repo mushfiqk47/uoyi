@@ -3,7 +3,7 @@
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const path = require("node:path");
-const { CACHE, sweepCacheDir } = require("./lib/files.cjs");
+const { CACHE, getCacheDir, isInCacheDir, sweepCacheDir } = require("./lib/files.cjs");
 const { listWorkspaceMedia } = require("./services/workspace.cjs");
 
 const STATE_TTL_MS = 30 * 60 * 1000;
@@ -75,8 +75,10 @@ function removeMediaArtifact(filePath) {
 
 function removeClipArtifact(entry) {
   if (!entry) return;
-  const target = entry.dir || (entry.file && path.dirname(entry.file) !== CACHE ? path.dirname(entry.file) : entry.file);
-  if (target && target !== CACHE && target.startsWith(CACHE)) {
+  const activeCache = path.resolve(getCacheDir());
+  const parentDir = entry.file ? path.resolve(path.dirname(entry.file)) : "";
+  const target = entry.dir || (parentDir && parentDir !== activeCache && parentDir !== path.resolve(CACHE) ? parentDir : entry.file);
+  if (target && target !== activeCache && target !== path.resolve(CACHE) && isInCacheDir(target)) {
     fsp.rm(target, { recursive: true, force: true }).catch(() => {});
   } else if (entry.file) {
     fsp.rm(entry.file, { force: true }).catch(() => {});
@@ -145,7 +147,7 @@ async function pruneAllCache() {
 }
 
 // Startup sweep of stale leftover temp files from dead processes (> 2h old)
-if (fs.existsSync(CACHE)) {
+if (fs.existsSync(CACHE) || fs.existsSync(getCacheDir())) {
   sweepCacheDir({ maxAgeMs: 2 * 60 * 60 * 1000 }).catch(() => {});
 }
 

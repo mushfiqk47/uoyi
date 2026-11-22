@@ -166,7 +166,7 @@ function SetupPanel() {
   const pending = items.filter((i) => !i.installed && (i.tier === "required" || i.required));
   const tierOf = (item: SetupItem) => item.tier ?? (item.required ? "required" : "optional");
   const tiers: Array<{ key: "required" | "recommended" | "optional"; title: string }> = [
-    { key: "required", title: "Required core runtime" },
+    { key: "required", title: "Required runtime & quality enhancements" },
     { key: "recommended", title: "Recommended media & speech tools" },
     { key: "optional", title: "Optional enhancements" },
   ];

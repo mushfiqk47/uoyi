@@ -477,8 +477,8 @@ async function extractRuntime(zipPath, onLog = () => {}) {
   try {
     const errors = [];
     let extracted = false;
-    const tarExe = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe");
-    if (fs.existsSync(tarExe)) {
+    const tarExe = process.platform === "win32" ? path.join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe") : "tar";
+    if (process.platform !== "win32" || fs.existsSync(tarExe)) {
       const r = await run(tarExe, ["-xf", zipPath, "-C", tmp], { timeout: 600000 });
       if (r.code === 0) {
         extracted = true;
@@ -490,7 +490,7 @@ async function extractRuntime(zipPath, onLog = () => {}) {
       errors.push("tar: not found");
     }
 
-    if (!extracted) {
+    if (!extracted && process.platform === "win32") {
       const cmd = `Expand-Archive -LiteralPath ${psQuote(zipPath)} -DestinationPath ${psQuote(tmp)} -Force`;
       const r = await run("powershell", ["-NoProfile", "-Command", cmd], { timeout: 600000 });
       if (r.code === 0) {
@@ -501,7 +501,7 @@ async function extractRuntime(zipPath, onLog = () => {}) {
       }
     }
 
-    if (!extracted) {
+    if (!extracted && process.platform === "win32") {
       try {
         const n = extractZipNode(zipPath, tmp);
         extracted = true;
@@ -540,8 +540,19 @@ async function extractRuntime(zipPath, onLog = () => {}) {
   }
 }
 
-/** Resolves the newest prebuilt CPU portable zip from GitHub releases, falling back to the pinned tested version. */
+/** Prebuilt runtime asset base names for this machine (release assets carry an `audio-<tag>-` prefix). */
+function runtimeAssetCandidates() {
+  if (process.platform === "win32") return ["bin-windows-x64-cpu-portable.zip"];
+  if (process.platform === "darwin") {
+    return [process.arch === "arm64" ? "bin-macos-arm64-metal.tar.gz" : "bin-macos-x64-metal.tar.gz"];
+  }
+  if (process.arch === "arm64") return ["bin-ubuntu-arm64-cpu-portable.tar.gz", "bin-ubuntu-x64-cpu-portable.tar.gz"];
+  return ["bin-ubuntu-x64-cpu-portable.tar.gz"];
+}
+
+/** Resolves the newest prebuilt runtime for this OS/arch from GitHub releases, falling back to the pinned tested Windows version. */
 async function latestRuntime() {
+  const wanted = runtimeAssetCandidates();
   try {
     const res = await fetch("https://api.github.com/repos/0xShug0/audio.cpp/releases/latest", {
       headers: { Accept: "application/vnd.github+json", "User-Agent": "clipweave-local-api" },
@@ -549,10 +560,13 @@ async function latestRuntime() {
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    const asset = (data.assets || []).find((a) => /bin-windows-x64-cpu-portable\.zip$/.test(String(a.name || "")));
-    if (!asset?.browser_download_url) throw new Error("no CPU portable asset in the latest release");
+    const assets = (data.assets || []).map((a) => String(a.name || ""));
+    const assetName = wanted.find((base) => assets.some((n) => n.endsWith(base)));
+    if (!assetName) throw new Error(`no prebuilt runtime asset for ${process.platform}/${process.arch} in the latest release`);
+    const asset = (data.assets || []).find((a) => String(a.name || "").endsWith(assetName));
     return { url: asset.browser_download_url, tag: data.tag_name || "latest" };
-  } catch {
+  } catch (e) {
+    if (process.platform !== "win32") throw new Error(`No prebuilt audio.cpp runtime could be resolved for ${process.platform}/${process.arch}: ${String(e.message || e)}`);
     return { url: RUNTIME_ZIP, tag: AUDIOCPP_VERSION };
   }
 }
@@ -780,6 +794,7 @@ module.exports = {
   zipLooksValid,
   extractZipNode,
   psQuote,
+  downloadFile,
   packageFor,
   modelFilePath,
   modelInstalled,

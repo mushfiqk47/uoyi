@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import { Check, HardDrive, Palette, Scissors, Clapperboard, Download, Sparkles } from "lucide-react";
+import { Check, HardDrive, Palette, Scissors, Clapperboard, Download, Sparkles, Wrench } from "lucide-react";
 import { useLibrary, useQueue, useStore } from "../store";
 import { chatCompletion, tryParseJson } from "../lib/ai/openai";
 import { loadFeedbackStats, resetFeedbackStats } from "../lib/ai/feedback";
 import { listSpeechModels, installSpeechModel, type SpeechModel } from "../platform/api/models";
+import { fetchSetupStatus, runSetupInstall, type SetupItem, type SetupJob } from "../platform/api/setup";
 import { ACCENTS, BACKGROUNDS, THEMES, type ButtonStyle, type Settings as S } from "../lib/settings";
 import { AutoTextarea, Field, Modal, Seg, Switch } from "../components/ui";
 import { clearBlobs } from "../lib/db";
@@ -41,9 +42,10 @@ function useServerHealth(): ServerHealth | null {
   return health;
 }
 
-type Section = "appearance" | "capture" | "editor" | "ai" | "export" | "data";
+type Section = "setup" | "appearance" | "capture" | "editor" | "ai" | "export" | "data";
 
 const SECTIONS: { id: Section; label: string; Icon: typeof Palette }[] = [
+  { id: "setup", label: "Setup", Icon: Wrench },
   { id: "appearance", label: "Themes", Icon: Palette },
   { id: "capture", label: "Clipping", Icon: Scissors },
   { id: "editor", label: "Editor", Icon: Clapperboard },
@@ -84,6 +86,7 @@ export function Settings() {
           ))}
         </nav>
         <div className="settings-panel" key={section}>
+          {section === "setup" && <SetupPanel />}
           {section === "appearance" && <Appearance />}
           {section === "capture" && <Capture />}
           {section === "editor" && <EditorDefaults />}
@@ -93,6 +96,120 @@ export function Settings() {
         </div>
       </div>
     </main>
+  );
+}
+
+/** Settings → Setup: checks the whole system and installs anything missing — the audio.cpp
+ *  runtime + caption model, FFmpeg, yt-dlp, and the optional pip tools — into the app's own
+ *  folders, so the same flow works on any machine, Windows, Linux, or macOS. */
+function SetupPanel() {
+  const { toast } = useStore();
+  const [items, setItems] = useState<SetupItem[]>([]);
+  const [jobs, setJobs] = useState<Record<string, SetupJob>>({});
+  const [busy, setBusy] = useState<string[]>([]);
+  const [loaded, setLoaded] = useState(false);
+
+  const refresh = useCallback(async () => {
+    try {
+      const data = await fetchSetupStatus();
+      setItems(data.items);
+      setJobs((prev) => ({ ...prev, ...data.jobs }));
+    } catch {
+      /* server may be starting */
+    } finally {
+      setLoaded(true);
+    }
+  }, []);
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const install = useCallback(
+    async (id: string, label: string) => {
+      setBusy((b) => (b.includes(id) ? b : [...b, id]));
+      try {
+        await runSetupInstall(id, (s) => setJobs((prev) => ({ ...prev, [id]: s })));
+        toast(`${label} is ready.`, "success");
+        await refresh();
+      } catch (e) {
+        toast(`${label}: ${(e as Error).message || "setup failed"}`, "error");
+        await refresh();
+      } finally {
+        setBusy((b) => b.filter((x) => x !== id));
+      }
+    },
+    [refresh, toast],
+  );
+
+  const installAllMissing = useCallback(async () => {
+    for (const item of items) {
+      if (item.installed || busy.includes(item.id)) continue;
+      await install(item.id, item.label);
+    }
+  }, [items, busy, install]);
+
+  const pending = items.filter((i) => !i.installed);
+  const sourceChip = (item: SetupItem) =>
+    item.installed ? (
+      <span className="chip success">{item.source === "app" ? "app bin" : "on PATH"}</span>
+    ) : (
+      <span className="chip danger">missing</span>
+    );
+
+  return (
+    <>
+      <h2 className="sec-title">System setup</h2>
+      <p className="muted set-intro">
+        Checks this machine and installs everything Clipweave needs — the transcription runtime and
+        caption model, FFmpeg, yt-dlp, and the optional Python tools — into the app's own folders.
+        Works on Windows, Linux, and macOS; nothing is added to PATH.
+      </p>
+      <div className="row" style={{ marginBottom: 12 }}>
+        <button className="btn accent sm" disabled={busy.length > 0 || pending.length === 0} onClick={() => void installAllMissing()}>
+          {busy.length > 0 ? "Setting up…" : pending.length > 0 ? `Install everything missing (${pending.length})` : "Everything is installed"}
+        </button>
+        <button className="btn plain sm" disabled={busy.length > 0} onClick={() => void refresh()}>
+          Re-check system
+        </button>
+      </div>
+      <div className="set-group card">
+        {loaded && items.length === 0 && <p className="muted">Couldn't reach the local server for a system check.</p>}
+        {items.map((item) => {
+          const job = jobs[item.id];
+          const isBusy = busy.includes(item.id);
+          return (
+            <SettingRow
+              key={item.id}
+              title={item.label}
+              desc={item.note + (item.version ? ` — ${item.version}` : "")}
+            >
+              <div className="ai-stack">
+                <div className="row">
+                  {sourceChip(item)}
+                  <button
+                    className="btn ghost sm"
+                    disabled={isBusy || item.installed}
+                    onClick={() => void install(item.id, item.label)}
+                  >
+                    {isBusy ? "Setting up…" : item.installed ? "Ready" : "Install"}
+                  </button>
+                </div>
+                {isBusy && job && job.progress > 0 && (
+                  <progress value={Math.min(100, job.progress)} max={100} aria-label={`${item.label} setup progress`} />
+                )}
+                {isBusy && job?.log && <small className="muted" role="status" aria-live="polite">{job.log}</small>}
+              </div>
+            </SettingRow>
+          );
+        })}
+        <SettingRow
+          title="Gemini fallback (optional)"
+          desc="Transcription falls back to Gemini when no local model is ready. Configure it in the AI tab — it is a key, not an install."
+        >
+          <span className="chip muted">AI tab</span>
+        </SettingRow>
+      </div>
+    </>
   );
 }
 

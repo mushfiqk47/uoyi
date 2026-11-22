@@ -1,6 +1,7 @@
 "use strict";
 
 const { spawn } = require("node:child_process");
+const fs = require("node:fs");
 const path = require("node:path");
 
 const ROOT = path.resolve(__dirname, "..", "..");
@@ -8,11 +9,25 @@ const ROOT = path.resolve(__dirname, "..", "..");
 let nvenc = null;
 let cachedOpenCvPython = undefined;
 
+// Tools the Setup panel can install into <repo>/bin. When a local copy exists it is
+// spawned by absolute path, so the app works without PATH edits on any machine/OS.
+const LOCAL_TOOLS = new Set(["ffmpeg", "ffprobe", "yt-dlp", "streamlink", "scenedetect", "nemo-speech"]);
+const TOOLS_DIR = process.env.CLIPWEAVE_TOOLS_DIR || path.join(ROOT, "bin");
+
+/** Absolute path of an app-installed tool binary, or null. Checked per spawn (cheap stat). */
+function resolveLocalTool(cmd) {
+  if (!LOCAL_TOOLS.has(cmd)) return null;
+  const exe = process.platform === "win32" ? `${cmd}.exe` : cmd;
+  const p = path.join(TOOLS_DIR, exe);
+  return fs.existsSync(p) ? p : null;
+}
+
 function run(cmd, args, { timeout = 0, cwd = ROOT, onSpawn, onStdout } = {}) {
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(cmd, args, { windowsHide: true, cwd });
+      const local = resolveLocalTool(cmd);
+      child = spawn(local || cmd, args, { windowsHide: true, cwd });
     } catch (e) {
       resolve({ code: -1, stdout: "", stderr: String(e.message || e) });
       return;
@@ -140,4 +155,4 @@ async function probe(file) {
   };
 }
 
-module.exports = { ROOT, run, hasTool, findOpenCvPython, findStreamlink, findScenedetect, encoderArgs, nvencEnabled, probe };
+module.exports = { ROOT, TOOLS_DIR, resolveLocalTool, run, hasTool, findOpenCvPython, findStreamlink, findScenedetect, encoderArgs, nvencEnabled, probe };

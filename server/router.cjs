@@ -14,6 +14,7 @@ const TABLES = [
   require("./routes/facecam.cjs"),
   require("./routes/models.cjs"),
   require("./routes/render.cjs"),
+  require("./routes/setup.cjs"),
 ];
 
 const ROUTES = new Map();

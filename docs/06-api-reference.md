@@ -32,6 +32,9 @@ All endpoints are served by the same handler. With `npm run dev`, use the Vite p
 | POST | `/api/clip/cut` | Cut a moment into MP4 + thumbnail. |
 | GET | `/media/clip?id=` | Stream a cut clip. |
 | POST | `/api/facecam/detect` | YuNet + SFace detection from a frame. |
+| GET | `/api/setup/status` | System check per installable tool (FFmpeg, yt-dlp, audio.cpp, pip tools) with source (`app` / `path` / `missing`). |
+| POST | `/api/setup/install` | Provision a tool into the app's `bin\` folder for the current OS (per-platform static builds, pip via detected Python). |
+| GET | `/api/setup/job?id=` | Setup job progress (status, log, percent). |
 | GET | `/api/models` | Model catalog with installed flags and per-model backend (`audiocpp` / `nemo`). |
 | POST | `/api/models/download` | Provision a model: audio.cpp runtime (when missing) + GGUF download, or `nemo-speech pull` for nemo-only entries. |
 | GET | `/api/models/status?id=` | Download status, log, and percent. |

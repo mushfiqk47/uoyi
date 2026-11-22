@@ -42,13 +42,15 @@ Installed and on `PATH` on this machine:
 | `nemo-speech` (NeMo-Speech.cpp CLI, prebuilt release) | Optional: an alternative local ASR backend; audio.cpp is the default |
 | An OpenAI-compatible chat endpoint | AI clip finding / moment scoring |
 
-No ASR runtime or model is bundled. Pressing **Download & use** under **Settings → AI → Caption
-model** — or the inline **Download & set up** button in the AI Clip Finder when transcription is
-missing — checks the system and provisions everything itself: it downloads the **latest prebuilt**
-audio.cpp runtime (~35 MB portable build) into `transcript\` and the chosen model GGUF (Parakeet
-TDT ~916 MB by default) into the repo's existing `models\` folder, then runs them by absolute
-path — nothing is added to PATH, no CLI install is required, and because the storage lives inside
-the project folder it travels with it between machines. Until a model is
+No ASR runtime or model is bundled. The **Settings → Setup** panel checks the whole machine and
+installs everything with one button per item (or **Install everything missing**): the **latest
+prebuilt** audio.cpp runtime plus the Parakeet caption model, **FFmpeg + FFprobe** (static builds:
+gyan.dev on Windows, johnvansickle on Linux, evermeet on macOS), **yt-dlp**, and the optional
+Python tools (Streamlink, PySceneDetect, OpenCV via pip). Everything lands in the app's own
+folders (`bin\`, `transcript\`, `models\`) and runs by absolute path — nothing is added to PATH,
+no CLI installs are required, and because the storage lives inside the project folder it travels
+with it between machines. The same provisioning also runs from **Settings → AI → Caption model**
+and the inline **Download & set up** button in the AI Clip Finder. Until a model is
 downloaded, captions and transcript-based clip finding fall back to Gemini when a server key is
 configured. Rendering, streaming and manual clipping do not need a model.
 

@@ -10,6 +10,7 @@ const STATE_TTL_MS = 30 * 60 * 1000;
 const mediaJobs = new Map(); // id -> { id, status, file, mime?, err, title, url, createdAt, accessedAt }
 const clipFiles = new Map(); // id -> { id, file, dir?, duration, mime, createdAt, accessedAt }
 const modelJobs = new Map(); // id -> { status, log, createdAt, accessedAt }
+const setupJobs = new Map(); // id -> { status, log, progress, createdAt, accessedAt }
 
 function touchEntry(entry) {
   if (!entry) return entry;
@@ -58,6 +59,13 @@ function reapExpiredState(ttlMs = STATE_TTL_MS) {
       modelJobs.delete(id);
     }
   }
+  for (const [id, job] of setupJobs) {
+    if (job.status === "installing") continue;
+    const at = job.accessedAt || job.createdAt || 0;
+    if (at && at < cutoff) {
+      setupJobs.delete(id);
+    }
+  }
 }
 
 function activeCachePaths() {
@@ -103,6 +111,7 @@ module.exports = {
   mediaJobs,
   clipFiles,
   modelJobs,
+  setupJobs,
   touchEntry,
   reapExpiredState,
   pruneAllCache,

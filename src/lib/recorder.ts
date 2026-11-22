@@ -25,53 +25,31 @@ interface Running {
 
 export function pickMime(): string {
   if (typeof MediaRecorder === "undefined") return "";
-  // Prefer hardware-friendly H.264 profiles rated for 1080p60 (High/Main Level 4.2) and VP9
-  // before falling back to Baseline Level 3.0 or browser default.
-  const preferred = [
-    "video/webm;codecs=h264,opus",
-    "video/mp4;codecs=avc1.64002A,mp4a.40.2",
-    "video/mp4;codecs=avc1.4D402A,mp4a.40.2",
-    "video/webm;codecs=vp9,opus",
-    "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
-  ];
+  // H.264 can use the GPU encoder. Forcing VP8 leaves three 1080p recorders per stream running
+  // through a software encoder, which starves the live decoder and makes playback stutter.
+  // An empty result is deliberate: MediaRecorder then chooses its own best (hardware) codec.
+  const preferred = ["video/webm;codecs=h264,opus", "video/mp4;codecs=avc1.42E01E,mp4a.40.2"];
   return preferred.find((m) => MediaRecorder.isTypeSupported(m)) ?? "";
 }
 
-type ExtendedRecorderOptions = MediaRecorderOptions & {
-  videoKeyFrameIntervalDuration?: number;
-};
-
-/** Build MediaRecorder options with keyframe pacing so recorded segments seek and play back smoothly. */
-function createRecorder(stream: MediaStream, mime: string, bitsPerSecond: number): MediaRecorder {
-  const base: ExtendedRecorderOptions = mime
-    ? { mimeType: mime, videoBitsPerSecond: bitsPerSecond, audioBitsPerSecond: 128_000 }
-    : { videoBitsPerSecond: bitsPerSecond, audioBitsPerSecond: 128_000 };
-  try {
-    return new MediaRecorder(stream, { ...base, videoKeyFrameIntervalDuration: 2000 } as MediaRecorderOptions);
-  } catch {
-    try {
-      return new MediaRecorder(stream, base);
-    } catch {
-      return new MediaRecorder(stream, { videoBitsPerSecond: bitsPerSecond, audioBitsPerSecond: 128_000 });
-    }
-  }
+/** Omit mimeType when the browser did not confirm an H.264 option, so it can pick a hardware
+ *  encoder. The actual type is read back from the constructed recorder. */
+function recorderOptions(mime: string, bitsPerSecond: number): MediaRecorderOptions {
+  return mime
+    ? { mimeType: mime, videoBitsPerSecond: bitsPerSecond }
+    : { videoBitsPerSecond: bitsPerSecond };
 }
 
 function blobType(recorder: MediaRecorder, fallback: string): string {
   return (recorder.mimeType || fallback).split(";")[0] || "video/webm";
 }
 
-/** Full HD needs enough headroom (6 Mbps) for smooth 1080p motion without blocking or encoder stalls. */
+/** Full HD needs roughly twice the bitrate of the old 1.5 Mbps capture to avoid blocking. */
 export function recordBitrate(quality: "fullhd" | "smooth"): number {
-  return quality === "fullhd" ? 6_000_000 : 2_500_000;
+  return quality === "fullhd" ? 4_000_000 : 1_500_000;
 }
 
-/** Target capture frame rate for the chosen recording quality. */
-export function recordFrameRate(quality: "fullhd" | "smooth"): number {
-  return quality === "fullhd" ? 60 : 30;
-}
-
-type CapturableVideo = HTMLVideoElement & { captureStream?: (fps?: number) => MediaStream };
+type CapturableVideo = HTMLVideoElement & { captureStream?: () => MediaStream };
 
 /** A recording is only useful with both tracks. Chrome has shipped a regression where a muted
  *  media element produced a silent capture, so the tile plays at near-zero volume instead. */
@@ -82,28 +60,26 @@ export function captureTracks(stream: MediaStream): { video: boolean; audio: boo
   };
 }
 
-/** Ask the encoder and video track to favour steady motion frame rate. */
-export function hintForMotion(stream: MediaStream, fps?: number): void {
+/** Ask the encoder to favour frame rate over sharpness (live video, not slides). */
+export function hintForMotion(stream: MediaStream): void {
   for (const track of stream.getVideoTracks()) {
     try { track.contentHint = "motion"; } catch { /* not supported everywhere */ }
-    if (fps && track.applyConstraints) {
-      void track.applyConstraints({ frameRate: { ideal: fps } }).catch(() => {});
-    }
   }
 }
 
-/** Capture a video element once at a fixed frame rate and reuse the stream across recorders. */
-export function captureVideo(video: HTMLVideoElement, existing?: MediaStream | null, fps = 60): MediaStream | null {
+/** Capture a video element once and reuse the stream across recorders. Reusing the stream
+ *  matters: every extra captureStream()/encoder is another decode of the same live frames. */
+export function captureVideo(video: HTMLVideoElement, existing?: MediaStream | null): MediaStream | null {
   if (existing) return existing;
   const v = video as CapturableVideo;
   if (!v.captureStream) return null;
   let stream: MediaStream;
   try {
-    stream = v.captureStream(fps);
+    stream = v.captureStream();
   } catch {
     return null;
   }
-  hintForMotion(stream, fps);
+  hintForMotion(stream);
   return stream;
 }
 
@@ -115,17 +91,12 @@ export class RollingRecorder {
   private bitrate: number;
   readonly seconds: number;
 
-  constructor(source: HTMLVideoElement | MediaStream, seconds: number, bitrate = 3_000_000, fps = 60) {
-    if (source instanceof MediaStream) {
-      this.stream = source;
-      hintForMotion(this.stream, fps);
-    } else {
-      const v = source as CapturableVideo;
-      if (!v.captureStream) throw new Error("unsupported");
-      // Throws a SecurityError when the stream's server doesn't allow recording (no CORS).
-      this.stream = v.captureStream(fps);
-      hintForMotion(this.stream, fps);
-    }
+  constructor(video: HTMLVideoElement, seconds: number, bitrate = 2_500_000) {
+    const v = video as CapturableVideo;
+    if (!v.captureStream) throw new Error("unsupported");
+    // Throws a SecurityError when the stream's server doesn't allow recording (no CORS).
+    this.stream = v.captureStream();
+    hintForMotion(this.stream);
     this.seconds = seconds;
     this.bitrate = bitrate;
     this.startOne();
@@ -151,10 +122,10 @@ export class RollingRecorder {
 
   private startOne(): void {
     if (!this.stream.getVideoTracks().length) return;
-    const rec = createRecorder(this.stream, this.mime, this.bitrate);
+    const rec = new MediaRecorder(this.stream, recorderOptions(this.mime, this.bitrate));
     const r: Running = { rec, startedAt: performance.now(), chunks: [], mime: blobType(rec, this.mime) };
     rec.ondataavailable = (e) => e.data.size && r.chunks.push(e.data);
-    rec.start(2000);
+    rec.start(1000);
     this.running.push(r);
   }
 
@@ -241,9 +212,9 @@ interface LiveSession {
   resolveStop: () => void;
 }
 
-// Five-second chunks cut IndexedDB writes and the number of blobs a long segment has to
+// Four-second chunks cut IndexedDB writes and the number of blobs a long segment has to
 // reassemble. Shorter slices cost more overhead per minute and gain little at this bitrate.
-const CHUNK_MS = 5000;
+const CHUNK_MS = 4000;
 const SEGMENT_MIN = 30;
 
 export class LiveRecorder {
@@ -294,7 +265,12 @@ export class LiveRecorder {
       this.onError?.("The stream has no video track to record");
       return;
     }
-    const rec = createRecorder(this.stream, this.mime, this.bitrate);
+    const rec = new MediaRecorder(this.stream, {
+      ...recorderOptions(this.mime, this.bitrate),
+      // 48 kbps made stream audio thin and crackly. 128 kbps keeps voices and game audio clean
+      // without competing with the video encoder for bandwidth.
+      audioBitsPerSecond: 128_000,
+    });
     let resolveStop!: () => void;
     const stopped = new Promise<void>((resolve) => { resolveStop = resolve; });
     const startedWall = Date.now();
@@ -358,28 +334,37 @@ export class LiveRecorder {
     this.current = null;
     if (s.timer !== null) clearTimeout(s.timer);
     this.onRotate?.();
-    if (s.rec.state !== "inactive") s.rec.stop();
+    if (s.rec.state !== "inactive") {
+      try { s.rec.requestData(); } catch { /* ignore */ }
+      s.rec.stop();
+    }
     // Start the next segment before reading the finished one back. Previously the recorder
     // was idle while the blob was assembled and written, which dropped footage at every save.
     if (!this.stopped) this.startOne();
     try {
       // A recorder that misses its stop event used to leave the segment hanging forever.
       let watchdog: number | null = null;
+      let timedOut = false;
       await Promise.race([
         s.stopped,
-        new Promise<void>((resolve) => { watchdog = window.setTimeout(resolve, 4000); }),
+        new Promise<void>((resolve) => {
+          watchdog = window.setTimeout(() => {
+            timedOut = true;
+            resolve();
+          }, 4000);
+        }),
       ]);
       if (watchdog !== null) clearTimeout(watchdog);
-      await Promise.all(s.chunks.map((c) => c.write));
+      if (timedOut) {
+        // Give any final ondataavailable callback a short beat to enqueue its chunk write.
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      await Promise.allSettled(s.chunks.map((c) => c.write));
       const seconds = (performance.now() - s.startedAt) / 1000;
       const mime = s.mime;
       try {
-        const parts: Blob[] = [];
-        // Read chunks in bounded batches so rotating a 45–60 min recording doesn't flood IndexedDB.
-        for (let i = 0; i < s.chunks.length; i += 24) {
-          const batch = await Promise.all(s.chunks.slice(i, i + 24).map((c) => getBlob(c.key)));
-          for (const b of batch) if (b && b.size > 0) parts.push(b);
-        }
+        const stored = await Promise.all(s.chunks.map((c) => getBlob(c.key)));
+        const parts = stored.filter((b): b is Blob => !!b && b.size > 0);
         parts.push(...s.failed);
         if (parts.length && seconds >= 0.5) {
           const blob = new Blob(parts, { type: mime });
@@ -388,11 +373,7 @@ export class LiveRecorder {
       } catch (e) {
         this.onError?.(`Couldn't save the recording: ${String((e as Error)?.message || e).slice(0, 100)}`);
       }
-      void (async () => {
-        for (let i = 0; i < s.chunks.length; i += 32) {
-          await Promise.all(s.chunks.slice(i, i + 32).map((c) => deleteBlob(c.key).catch(() => {})));
-        }
-      })();
+      for (const c of s.chunks) void deleteBlob(c.key).catch(() => {});
     } finally {
       // Also covers a rotate that ran while a new segment was already started.
       if (!this.stopped && !this.current) this.startOne();

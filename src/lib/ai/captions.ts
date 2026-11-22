@@ -36,10 +36,41 @@ function blobToBase64(blob: Blob): Promise<string> {
   });
 }
 
+export interface CaptionClipRange {
+  in: number;
+  out: number;
+  speed: number;
+}
+
+export function mapRawWordsToClipRanges(words: CaptionWord[], clips: CaptionClipRange[]): CaptionWord[] {
+  if (!clips.length) return words;
+  const out: CaptionWord[] = [];
+  let cursor = 0;
+  for (const c of clips) {
+    const cIn = Math.max(0, Number(c.in) || 0);
+    const cOut = Math.max(cIn + 0.05, Number(c.out) || cIn + 0.05);
+    const speed = Math.max(0.25, Math.min(4, Number(c.speed) || 1));
+    const len = (cOut - cIn) / speed;
+    for (const w of words) {
+      if (w.end <= cIn || w.start >= cOut) continue;
+      const ws = cursor + Math.max(0, w.start - cIn) / speed;
+      const we = cursor + Math.min(cOut - cIn, Math.max(w.start - cIn + 0.05, w.end - cIn)) / speed;
+      out.push({
+        id: uid("w"),
+        text: w.text,
+        start: Number(ws.toFixed(3)),
+        end: Number(Math.max(ws + 0.05, we).toFixed(3)),
+      });
+    }
+    cursor += len;
+  }
+  return out;
+}
+
 export async function generateCaptionsForBlob(
   blob: Blob,
   settings: Pick<Settings, "captionModel" | "nemoSpeechUrl"> & Partial<Settings>,
-  opts?: { language?: string; format?: "json" | "srt" | "vtt"; diarize?: boolean },
+  opts?: { language?: string; format?: "json" | "srt" | "vtt"; diarize?: boolean; clips?: CaptionClipRange[] },
 ): Promise<GeneratedCaptions> {
   // Prefer NeMo-Speech HTTP API if configured, fallback to local dev helper which shells out to nemo-speech CLI.
   const nemo = settings.nemoSpeechUrl?.replace(/\/+$/, "");
@@ -71,8 +102,9 @@ export async function generateCaptionsForBlob(
       };
       res = await fetch(`${nemo}/api/captions/generate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       const j = await res.json().catch(() => null);
-      if (res.ok && j) data = j;
-      else lastErr = (j && (j.detail || j.error)) || (await res.text().catch(() => "")) || `HTTP ${res.status}`;
+      if (res.ok && j) {
+        data = j;
+      } else lastErr = (j && (j.detail || j.error)) || (await res.text().catch(() => "")) || `HTTP ${res.status}`;
     } catch (e) {
       lastErr = String((e as Error)?.message || e);
     }
@@ -80,6 +112,7 @@ export async function generateCaptionsForBlob(
   if (!data) {
     const form = new FormData();
     form.append("file", blob, "audio.bin");
+    if (opts?.clips?.length) form.append("clips", JSON.stringify(opts.clips));
     try {
       data = await apiJson<any>(`/api/captions/generate?${localQuery}`, { method: "POST", body: form });
     } catch (e) {
@@ -90,8 +123,8 @@ export async function generateCaptionsForBlob(
   const text = String(data.text || data.transcript || "");
   let words = wordsFromData(data.data || data);
   if (!words.length && (data.format === "srt" || data.format === "vtt" || /-->/.test(text))) words = parseSubtitles(text);
-  if (!words.length && text.trim()) {
-    // Last resort: spread words over unknown duration-less transcript is bad; return empty words but keep text.
+  if (opts?.clips?.length && words.length) {
+    words = mapRawWordsToClipRanges(words, opts.clips);
   }
   return { text, words, raw: data };
 }

@@ -2,7 +2,7 @@ import type { Media, MediaKind } from "./types";
 import { putBlob } from "./db";
 import { uid } from "./util";
 
-function kindOf(file: File): MediaKind | null {
+export function kindOf(file: File): MediaKind | null {
   if (file.type.startsWith("video/")) return "video";
   if (file.type.startsWith("audio/")) return "audio";
   if (file.type.startsWith("image/")) return "image";
@@ -31,7 +31,7 @@ export function settleDuration(el: HTMLMediaElement): Promise<number> {
   });
 }
 
-async function probe(blob: Blob, kind: MediaKind): Promise<{ duration: number; width: number; height: number }> {
+export async function probe(blob: Blob, kind: MediaKind): Promise<{ duration: number; width: number; height: number }> {
   const url = URL.createObjectURL(blob);
   try {
     if (kind === "image") {

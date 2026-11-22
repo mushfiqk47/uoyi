@@ -2,62 +2,6 @@
 
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
-const dns = require("node:dns/promises");
-const net = require("node:net");
-
-function isPrivateIp(ip) {
-  if (!ip) return true;
-  const normalized = ip.replace(/^::ffff:/i, "");
-  if (net.isIPv4(normalized)) {
-    const parts = normalized.split(".").map(Number);
-    const [a, b] = parts;
-    if (a === 0 || a === 10 || a === 127) return true;
-    if (a === 169 && b === 254) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 100 && b >= 64 && b <= 127) return true;
-    return false;
-  }
-  const lower = normalized.toLowerCase();
-  return (
-    lower === "::" ||
-    lower === "::1" ||
-    lower.startsWith("fc") ||
-    lower.startsWith("fd") ||
-    lower.startsWith("fe80:")
-  );
-}
-
-/** Rejects non-http(s) URLs and loopback/link-local/RFC1918 targets to prevent SSRF. */
-async function assertSafePublicUrl(raw) {
-  let target;
-  try {
-    target = new URL(String(raw || ""));
-  } catch {
-    throw new Error("Invalid URL");
-  }
-  if (!/^https?:$/.test(target.protocol)) {
-    throw new Error("Only http(s) URLs are supported");
-  }
-  const host = target.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  if (!host || host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) {
-    throw new Error("Local or private network URLs are not allowed");
-  }
-  if (net.isIP(host)) {
-    if (isPrivateIp(host)) throw new Error("Private network IP addresses are not allowed");
-    return target;
-  }
-  try {
-    const records = await dns.lookup(host, { all: true, verbatim: true });
-    if (!records.length || records.some((r) => isPrivateIp(r.address))) {
-      throw new Error("Resolved address is in a private or reserved network");
-    }
-  } catch (e) {
-    if (e.message.includes("private") || e.message.includes("reserved")) throw e;
-    // Let the upstream HTTP request handle ordinary transient DNS errors
-  }
-  return target;
-}
 
 function json(res, status, body) {
   const data = Buffer.from(JSON.stringify(body));
@@ -69,8 +13,8 @@ function json(res, status, body) {
   res.end(data);
 }
 
-function fail(res, status, message) {
-  json(res, status, { ok: false, error: message });
+function fail(res, status, message, code) {
+  json(res, status, code ? { ok: false, error: message, code } : { ok: false, error: message });
 }
 
 function readBody(req, limit = 32 * 1024 * 1024) {
@@ -114,43 +58,63 @@ function parseRange(header, size) {
   return { start, end, length: end - start + 1 };
 }
 
-function pipeStream(stream, res) {
-  // Destroy the file descriptor immediately if the client aborts mid-scrub.
-  res.on("close", () => stream.destroy());
-  stream.on("error", () => {
-    if (!res.headersSent) fail(res, 500, "Failed to read file");
-    else res.destroy();
+function streamFileToResponse(req, res, file, opts) {
+  return new Promise((resolve) => {
+    const stream = fs.createReadStream(file, opts);
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    stream.on("error", () => {
+      if (!res.headersSent) {
+        res.statusCode = 500;
+        res.end();
+      } else {
+        res.destroy();
+      }
+      finish();
+    });
+    res.on("finish", finish);
+    res.on("close", () => {
+      stream.destroy();
+      finish();
+    });
+    req.on("aborted", () => {
+      stream.destroy();
+      finish();
+    });
+    stream.pipe(res);
   });
-  stream.pipe(res);
 }
 
-function sendFile(req, res, file, type, extraHeaders = {}) {
-  return fsp.stat(file).then((stat) => {
-    res.setHeader("Content-Type", type);
-    res.setHeader("Accept-Ranges", "bytes");
-    res.setHeader("Cache-Control", "no-store");
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    for (const [k, v] of Object.entries(extraHeaders)) res.setHeader(k, v);
+async function sendFile(req, res, file, type, extraHeaders = {}) {
+  const stat = await fsp.stat(file);
+  res.setHeader("Content-Type", type);
+  res.setHeader("Accept-Ranges", "bytes");
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  for (const [k, v] of Object.entries(extraHeaders)) res.setHeader(k, v);
 
-    const range = parseRange(req.headers.range, stat.size);
-    if (range) {
-      if (range.invalid) {
-        res.statusCode = 416;
-        res.setHeader("Content-Range", `bytes */${stat.size}`);
-        res.end();
-        return;
-      }
-      res.statusCode = 206;
-      res.setHeader("Content-Range", `bytes ${range.start}-${range.end}/${stat.size}`);
-      res.setHeader("Content-Length", range.length);
-      pipeStream(fs.createReadStream(file, { start: range.start, end: range.end }), res);
+  const range = parseRange(req.headers.range, stat.size);
+  if (range) {
+    if (range.invalid) {
+      res.statusCode = 416;
+      res.setHeader("Content-Range", `bytes */${stat.size}`);
+      res.end();
       return;
     }
+    res.statusCode = 206;
+    res.setHeader("Content-Range", `bytes ${range.start}-${range.end}/${stat.size}`);
+    res.setHeader("Content-Length", range.length);
+    await streamFileToResponse(req, res, file, { start: range.start, end: range.end });
+    return;
+  }
 
-    res.statusCode = 200;
-    res.setHeader("Content-Length", stat.size);
-    pipeStream(fs.createReadStream(file), res);
-  });
+  res.statusCode = 200;
+  res.setHeader("Content-Length", stat.size);
+  await streamFileToResponse(req, res, file);
 }
 
 function methodAndPath(req) {
@@ -158,4 +122,4 @@ function methodAndPath(req) {
   return { method: req.method || "GET", pathname: url.pathname, query: url.searchParams };
 }
 
-module.exports = { json, fail, readBody, readJson, parseRange, sendFile, methodAndPath, isPrivateIp, assertSafePublicUrl };
+module.exports = { json, fail, readBody, readJson, parseRange, sendFile, methodAndPath };

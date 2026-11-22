@@ -6,6 +6,7 @@ const path = require("node:path");
 const { json, methodAndPath } = require("./lib/http.cjs");
 const { handle } = require("./router.cjs");
 const { ROOT } = require("./lib/proc.cjs");
+const { safeResolvedPath } = require("./lib/security.cjs");
 
 const STATIC_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -22,10 +23,10 @@ const STATIC_TYPES = {
 
 function serveStatic(req, res, pathname) {
   const dist = path.resolve(ROOT, "dist");
-  const target = path.resolve(dist, pathname === "/" ? "index.html" : pathname.replace(/^\/+/, ""));
-  const rel = path.relative(dist, target);
-  if (rel.startsWith("..") || path.isAbsolute(rel)) return false;
-  const file = fs.existsSync(target) && fs.statSync(target).isFile() ? target : path.join(dist, "index.html");
+  const target = safeResolvedPath(dist, pathname);
+  if (!target) return false;
+  const fallback = path.join(dist, "index.html");
+  const file = fs.existsSync(target) && fs.statSync(target).isFile() ? target : fallback;
   if (!fs.existsSync(file)) return false;
   res.setHeader("Content-Type", STATIC_TYPES[path.extname(file)] || "application/octet-stream");
   fs.createReadStream(file).pipe(res);

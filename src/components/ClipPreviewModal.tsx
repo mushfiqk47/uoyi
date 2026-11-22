@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Clip } from "../lib/types";
-import { blobUrl } from "../lib/db";
+import { acquireBlobUrl } from "../lib/db";
 import { fmtWhen } from "../lib/util";
 import { captionPages, FONT_FAMILY } from "../lib/compositor";
 import { postCopyText } from "../lib/project";
@@ -13,97 +13,67 @@ export function ClipPreviewModal({ clip, onClose }: { clip: Clip; onClose: () =>
   const ref = useRef<HTMLVideoElement>(null);
   const { settings, openClip, toast } = useStore();
   const [url, setUrl] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
   const [active, setActive] = useState<{ page: number; word: number } | null>(null);
 
   useEffect(() => {
     let alive = true;
-    setLoading(true);
-    blobUrl(clip.blobKey)
-      .then((u) => {
-        if (!alive) return;
-        setUrl(u);
-        setLoading(false);
-      })
-      .catch(() => {
-        if (!alive) return;
-        setUrl(null);
-        setLoading(false);
-      });
-    return () => { alive = false; };
+    let release = () => {};
+    void acquireBlobUrl(clip.blobKey).then((entry) => {
+      if (!entry) return;
+      if (!alive) entry.release();
+      else {
+        release = entry.release;
+        setUrl(entry.url);
+      }
+    });
+    return () => {
+      alive = false;
+      release();
+    };
   }, [clip.blobKey]);
 
   const pages = useMemo(() => (clip.captions?.length ? captionPages(clip.captions, 3) : []), [clip.captions]);
   useEffect(() => {
-    if (!pages.length || !url) {
+    if (!pages.length) {
       setActive(null);
       return;
     }
-    const video = ref.current;
-    if (!video) return;
     let raf = 0;
     let last = "";
-
-    const syncAtCurrentTime = () => {
-      const t = video.currentTime;
-      let pageIndex = -1;
-      let wordIndex = -1;
-      for (let pi = 0; pi < pages.length; pi++) {
-        const pg = pages[pi];
-        if (t < pg[0].start || t > pg[pg.length - 1].end + 0.05) continue;
-        pageIndex = pi;
-        wordIndex = pg.findIndex((w) => t >= w.start && t < w.end);
-        break;
-      }
-      const key = pageIndex >= 0 ? `${pageIndex}:${wordIndex}` : "";
-      if (key !== last) {
-        last = key;
-        setActive(pageIndex >= 0 ? { page: pageIndex, word: wordIndex } : null);
-      }
-    };
-
-    // Only run the 60 fps RAF loop while video is actively playing to avoid idle CPU/battery drain.
     const loop = () => {
-      syncAtCurrentTime();
-      if (!video.paused && !video.ended) raf = requestAnimationFrame(loop);
-      else raf = 0;
-    };
-    const startLoop = () => {
-      if (!raf) raf = requestAnimationFrame(loop);
-    };
-    const stopLoop = () => {
-      if (raf) {
-        cancelAnimationFrame(raf);
-        raf = 0;
+      const v = ref.current;
+      if (v) {
+        const t = v.currentTime;
+        let pageIndex = -1;
+        let wordIndex = -1;
+        for (let pi = 0; pi < pages.length; pi++) {
+          const pg = pages[pi];
+          if (t < pg[0].start || t > pg[pg.length - 1].end + 0.05) continue;
+          pageIndex = pi;
+          wordIndex = pg.findIndex((w) => t >= w.start && t < w.end);
+          break;
+        }
+        const key = pageIndex >= 0 ? `${pageIndex}:${wordIndex}` : "";
+        if (key !== last) {
+          last = key;
+          setActive(pageIndex >= 0 ? { page: pageIndex, word: wordIndex } : null);
+        }
       }
-      syncAtCurrentTime();
+      raf = requestAnimationFrame(loop);
     };
-
-    video.addEventListener("play", startLoop);
-    video.addEventListener("pause", stopLoop);
-    video.addEventListener("ended", stopLoop);
-    video.addEventListener("seeked", syncAtCurrentTime);
-    if (!video.paused) startLoop();
-    else syncAtCurrentTime();
-
-    return () => {
-      if (raf) cancelAnimationFrame(raf);
-      video.removeEventListener("play", startLoop);
-      video.removeEventListener("pause", stopLoop);
-      video.removeEventListener("ended", stopLoop);
-      video.removeEventListener("seeked", syncAtCurrentTime);
-    };
-  }, [pages, url]);
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, [pages]);
 
   const page = active ? pages[active.page] : undefined;
   const highlight = settings.accent === "#fafafa" ? "#facc15" : settings.accent;
   const v = clip.viral;
-  const postText = useMemo(() => postCopyText(clip), [clip]);
 
   const copyPostCopy = async () => {
-    if (!postText) return;
+    const text = postCopyText(clip);
+    if (!text) return;
     try {
-      await navigator.clipboard.writeText(postText);
+      await navigator.clipboard.writeText(text);
       toast("Caption & hashtags copied", "success");
     } catch {
       toast("Could not copy to clipboard", "error");
@@ -144,11 +114,7 @@ export function ClipPreviewModal({ clip, onClose }: { clip: Clip; onClose: () =>
         </>
       }
     >
-      {loading ? (
-        <p className="muted" role="status" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span className="spinner" /> Loading clip preview…
-        </p>
-      ) : url ? (
+      {url ? (
         <div className="clip-preview-frame">
           <video
             ref={ref}
@@ -185,10 +151,10 @@ export function ClipPreviewModal({ clip, onClose }: { clip: Clip; onClose: () =>
       )}
 
       {v && (
-        <div className="card" style={{ padding: 14, marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
-          <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-            <div className="row" style={{ gap: 8, alignItems: "center" }}>
-              <Flame className="ic" style={{ color: "var(--brand)" }} />
+        <div className="card viral-card">
+          <div className="viral-card-head">
+            <div className="row">
+              <Flame className="ic viral-flame" />
               <b>Viral Breakdown</b>
               {clip.aiScore !== undefined && (
                 <span className="chip accent">
@@ -196,7 +162,7 @@ export function ClipPreviewModal({ clip, onClose }: { clip: Clip; onClose: () =>
                 </span>
               )}
             </div>
-            <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+            <div className="viral-platforms">
               {v.platforms.map((p) => (
                 <span key={p} className="chip">{p}</span>
               ))}
@@ -204,38 +170,38 @@ export function ClipPreviewModal({ clip, onClose }: { clip: Clip; onClose: () =>
           </div>
 
           {v.breakdown && (
-            <div className="row" style={{ gap: 12, flexWrap: "wrap", fontSize: 12 }}>
-              <span className="muted">Hook <b style={{ color: "var(--fg)" }}>{v.breakdown.hook}/10</b></span>
-              <span className="muted">Pacing <b style={{ color: "var(--fg)" }}>{v.breakdown.pacing}/10</b></span>
-              <span className="muted">Emotion <b style={{ color: "var(--fg)" }}>{v.breakdown.emotion}/10</b></span>
-              <span className="muted">Shareability <b style={{ color: "var(--fg)" }}>{v.breakdown.shareability}/10</b></span>
+            <div className="viral-card-scores">
+              <span className="muted">Hook <b>{v.breakdown.hook}/10</b></span>
+              <span className="muted">Pacing <b>{v.breakdown.pacing}/10</b></span>
+              <span className="muted">Emotion <b>{v.breakdown.emotion}/10</b></span>
+              <span className="muted">Shareability <b>{v.breakdown.shareability}/10</b></span>
             </div>
           )}
 
           {v.hook && (
-            <div style={{ fontSize: 12.5 }}>
+            <div className="viral-card-line">
               <span className="muted">3s On-Screen Hook: </span>
-              <b style={{ color: "var(--brand)" }}>{v.hook}</b>
+              <b className="viral-hook-text">{v.hook}</b>
             </div>
           )}
 
           {v.whyViral && (
-            <div style={{ fontSize: 12.5, lineHeight: 1.5 }}>
+            <div className="viral-card-line">
               <span className="muted">Why it goes viral: </span>
               <span>{v.whyViral}</span>
             </div>
           )}
 
           {v.editingTips && (
-            <div style={{ fontSize: 12.5, lineHeight: 1.5 }}>
+            <div className="viral-card-line">
               <span className="muted">Edit blueprint: </span>
               <span>{v.editingTips}</span>
             </div>
           )}
 
           {(v.caption || v.hashtags.length > 0) && (
-            <div className="row" style={{ gap: 8, alignItems: "flex-start", justifyContent: "space-between", paddingTop: 4, borderTop: "1px solid var(--hairline)" }}>
-              <div style={{ fontSize: 12, lineHeight: 1.5 }}>
+            <div className="viral-card-copy">
+              <div>
                 <span className="muted">Post copy: </span>
                 <span>{v.caption} {v.hashtags.join(" ")}</span>
               </div>

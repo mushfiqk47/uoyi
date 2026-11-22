@@ -21,18 +21,18 @@ afterEach(() => {
 });
 
 describe("hassle-free recording defaults", () => {
-  it("starts off with a fifteen minute auto-save interval in Full HD", () => {
+  it("starts off with a five minute auto-save interval in Full HD", () => {
     expect(DEFAULT_SETTINGS.autoRecord).toBe(false);
-    expect(DEFAULT_SETTINGS.recordSaveSeconds).toBe(900);
+    expect(DEFAULT_SETTINGS.recordSaveSeconds).toBe(300);
     expect(DEFAULT_SETTINGS.recordQuality).toBe("fullhd");
-    expect(loadSettings().recordSaveSeconds).toBe(900);
+    expect(loadSettings().recordSaveSeconds).toBe(300);
   });
 
   it("keeps a custom interval from saved settings", () => {
-    store.set("clipkit.settings.v1", JSON.stringify({ autoRecord: true, recordSaveSeconds: 2700 }));
+    store.set("clipkit.settings.v1", JSON.stringify({ autoRecord: true, recordSaveSeconds: 45 }));
     const s = loadSettings();
     expect(s.autoRecord).toBe(true);
-    expect(s.recordSaveSeconds).toBe(2700);
+    expect(s.recordSaveSeconds).toBe(45);
   });
 
   it("migrates the old preset in minutes to seconds", () => {
@@ -43,14 +43,13 @@ describe("hassle-free recording defaults", () => {
   it("clamps intervals outside the supported range", () => {
     store.set("clipkit.settings.v1", JSON.stringify({ recordSaveSeconds: 5 }));
     expect(loadSettings().recordSaveSeconds).toBe(30);
-    store.set("clipkit.settings.v1", JSON.stringify({ recordSaveSeconds: 20000 }));
-    expect(loadSettings().recordSaveSeconds).toBe(14400);
   });
 
   it("defaults to AI Studio Gemini (gemini-4-hydrogen) and upgrades legacy keyless Gemini settings", () => {
     expect(DEFAULT_SETTINGS.aiProfile).toBe("gemini");
     expect(DEFAULT_SETTINGS.aiGemini).toEqual({ baseUrl: "", apiKey: "", model: "gemini-4-hydrogen" });
-    expect(DEFAULT_SETTINGS.aiKilo).toEqual({ baseUrl: "https://rjvi38q.abc-tunnel.us/v1", apiKey: "", model: "kc/kilo-auto/free" });
+    expect(DEFAULT_SETTINGS.aiKilo).toEqual({ baseUrl: "", apiKey: "", model: "kc/kilo-auto/free" });
+    expect(DEFAULT_SETTINGS.aiClipPrompt).not.toMatch(/GTA/i);
 
     store.set(
       "clipkit.settings.v1",
@@ -74,12 +73,18 @@ describe("hassle-free recording defaults", () => {
     expect(custom.aiOpenAi.apiKey).toBe("sk-test");
   });
 
-  it("keeps a Gemini API key entered in Settings across reloads", () => {
+  it("keeps a Gemini API key entered in Settings across reloads and clears retired tunnel URLs", () => {
     store.set(
       "clipkit.settings.v1",
-      JSON.stringify({ aiProfile: "gemini", aiGemini: { baseUrl: "", apiKey: "sk-gemini-user", model: "gemini-4-hydrogen" } }),
+      JSON.stringify({
+        aiProfile: "gemini",
+        aiGemini: { baseUrl: "", apiKey: "sk-gemini-user", model: "gemini-4-hydrogen" },
+        aiKilo: { baseUrl: "https://rjvi38q.abc-tunnel.us/v1", apiKey: "", model: "kc/kilo-auto/free" },
+      }),
     );
-    expect(loadSettings().aiGemini).toEqual({ baseUrl: "", apiKey: "sk-gemini-user", model: "gemini-4-hydrogen" });
+    const loaded = loadSettings();
+    expect(loaded.aiGemini).toEqual({ baseUrl: "", apiKey: "sk-gemini-user", model: "gemini-4-hydrogen" });
+    expect(loaded.aiKilo.baseUrl).toBe("");
   });
 
   it("drops the date from the shipped file-name pattern but keeps custom patterns", () => {
@@ -97,16 +102,17 @@ describe("hassle-free recording defaults", () => {
     // Second load after migration respects user switching back to fill
     store.set("clipkit.settings.v1", JSON.stringify({ defaultLayout: "fill" }));
     expect(loadSettings().defaultLayout).toBe("fill");
-    store.clear();
     store.set("clipkit.settings.v1", JSON.stringify({ defaultLayout: "fit" }));
     expect(loadSettings().defaultLayout).toBe("fit");
   });
 
-  it("enables auto facecam detection by default and supports 30-120 fps export", () => {
-    expect(DEFAULT_SETTINGS.autoFacecamOnOpen).toBe(true);
-    store.set("clipkit.settings.v1", JSON.stringify({ exportFps: 120 }));
-    expect(loadSettings().exportFps).toBe(120);
-    store.set("clipkit.settings.v1", JSON.stringify({ exportFps: 75 }));
+  it("enforces a minimum export framerate of 60 fps", () => {
+    expect(DEFAULT_SETTINGS.exportFps).toBe(60);
+    store.set("clipkit.settings.v1", JSON.stringify({ exportFps: 30 }));
     expect(loadSettings().exportFps).toBe(60);
+    store.set("clipkit.settings.v1", JSON.stringify({ exportFps: 24 }));
+    expect(loadSettings().exportFps).toBe(60);
+    store.set("clipkit.settings.v1", JSON.stringify({ exportFps: 90 }));
+    expect(loadSettings().exportFps).toBe(90);
   });
 });

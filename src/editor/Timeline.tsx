@@ -1,15 +1,32 @@
-import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as RPointerEvent, type KeyboardEvent as RKeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent, type KeyboardEvent as RKeyboardEvent } from "react";
 import { Captions, Film, Image as ImageIcon, Music, Scissors, Trash2, Type, ZoomIn, ZoomOut } from "lucide-react";
 import type { Project } from "../lib/types";
 import { activeClipAt, clipLength, clipStarts } from "../lib/project";
 import { useStore } from "../store";
 import type { Player } from "./player";
 import { useClock } from "./player";
+import { loadWaveformPeaks } from "./waveform";
 import { clamp, fmtTime } from "../lib/util";
 
 export type Selection = { kind: "video" | "text" | "caption" | "music"; id: string } | null;
 
 const HEAD_W = 108;
+const SNAP_PX = 6;
+
+function snapTime(value: number, targets: number[], pps: number, bypass: boolean): number {
+  if (bypass || pps <= 0) return value;
+  const threshold = SNAP_PX / pps;
+  let best = value;
+  let bestDist = threshold;
+  for (const t of targets) {
+    const d = Math.abs(t - value);
+    if (d <= bestDist) {
+      bestDist = d;
+      best = t;
+    }
+  }
+  return best;
+}
 
 function useDrag() {
   return (e: RPointerEvent, onMove: (dx: number, ev: PointerEvent) => void, onEnd?: () => void) => {
@@ -57,6 +74,7 @@ export function Timeline({
   const [pps, setPps] = useState(40);
   const [userZoomed, setUserZoomed] = useState(false);
   const [viewW, setViewW] = useState(0);
+  const [dragTip, setDragTip] = useState<{ x: number; label: string } | null>(null);
   const duration = player.duration;
   const drag = useDrag();
   const targetVideo =
@@ -84,8 +102,25 @@ export function Timeline({
   }, []);
 
   const width = Math.max(duration * pps + 80, viewW - HEAD_W);
-  const starts = clipStarts(project);
-  const mediaById = new Map(project.media.map((m) => [m.id, m]));
+  const starts = useMemo(() => clipStarts(project), [project]);
+  const mediaById = useMemo(() => new Map(project.media.map((m) => [m.id, m])), [project.media]);
+
+  const snapTargets = useMemo(() => {
+    const set = new Set<number>([0, duration, player.clock.time]);
+    for (let i = 0; i < project.video.length; i++) {
+      set.add(starts[i]);
+      set.add(starts[i] + clipLength(project.video[i]));
+    }
+    for (const t of project.texts) {
+      set.add(t.start);
+      set.add(t.end);
+    }
+    for (const a of project.music) {
+      set.add(a.start);
+      set.add(a.start + (a.out - a.in));
+    }
+    return [...set];
+  }, [duration, player.clock.time, project.video, project.texts, project.music, starts]);
 
   const timeAt = (clientX: number) => {
     const el = scrollRef.current!;
@@ -95,8 +130,18 @@ export function Timeline({
 
   const scrub = (e: RPointerEvent) => {
     if (e.button !== 0) return;
-    player.seek(timeAt(e.clientX));
-    drag(e, (_dx, ev) => player.seek(timeAt(ev.clientX)));
+    const t0 = clamp(timeAt(e.clientX), 0, duration);
+    player.seek(t0);
+    setDragTip({ x: HEAD_W + t0 * pps, label: fmtTime(t0, true) });
+    drag(
+      e,
+      (_dx, ev) => {
+        const t = clamp(timeAt(ev.clientX), 0, duration);
+        player.seek(t);
+        setDragTip({ x: HEAD_W + t * pps, label: fmtTime(t, true) });
+      },
+      () => setDragTip(null),
+    );
   };
 
   const zoom = (f: number) => {
@@ -168,6 +213,11 @@ export function Timeline({
       </div>
       <div className="tl-scroll" ref={scrollRef}>
         <div className="tl-inner" style={{ width: width + HEAD_W }}>
+          {dragTip && (
+            <div className="tl-drag-tip tabular" style={{ left: dragTip.x }} aria-hidden="true">
+              {dragTip.label}
+            </div>
+          )}
           <div className="tl-ruler" onPointerDown={scrub} style={{ paddingLeft: HEAD_W }}>
             <div className="tl-head-spacer" />
             {ticks.map((t) => (
@@ -187,22 +237,35 @@ export function Timeline({
               const trim = (edge: "in" | "out") => (e: RPointerEvent) => {
                 onSelect({ kind: "video", id: c.id });
                 const start = { in: c.in, out: c.out };
-                drag(e, (dx) => {
-                  const ds = (dx / pps) * c.speed;
-                  editProject(
-                    (p) => ({
-                      ...p,
-                      video: p.video.map((v) =>
-                        v.id !== c.id
-                          ? v
-                          : edge === "in"
-                            ? { ...v, in: clamp(start.in + ds, 0, v.out - 0.1) }
-                            : { ...v, out: clamp(start.out + ds, v.in + 0.1, maxOut) },
-                      ),
-                    }),
-                    `trim-${c.id}`,
-                  );
-                });
+                const baseStart = starts[i];
+                drag(
+                  e,
+                  (dx, ev) => {
+                    const dsRaw = (dx / pps) * c.speed;
+                    let val: number;
+                    if (edge === "in") {
+                      const rawIn = clamp(start.in + dsRaw, 0, start.out - 0.1);
+                      const tlEdge = baseStart + (rawIn - start.in) / c.speed;
+                      const snappedTl = snapTime(tlEdge, snapTargets, pps, ev.altKey || ev.shiftKey);
+                      val = clamp(start.in + (snappedTl - baseStart) * c.speed, 0, start.out - 0.1);
+                      setDragTip({ x: HEAD_W + (baseStart + (val - start.in) / c.speed) * pps, label: fmtTime(val, true) });
+                    } else {
+                      const rawOut = clamp(start.out + dsRaw, start.in + 0.1, maxOut);
+                      const tlEdge = baseStart + (rawOut - start.in) / c.speed;
+                      const snappedTl = snapTime(tlEdge, snapTargets, pps, ev.altKey || ev.shiftKey);
+                      val = clamp(start.in + (snappedTl - baseStart) * c.speed, start.in + 0.1, maxOut);
+                      setDragTip({ x: HEAD_W + (baseStart + (val - start.in) / c.speed) * pps, label: fmtTime(val, true) });
+                    }
+                    editProject(
+                      (p) => ({
+                        ...p,
+                        video: p.video.map((v) => (v.id !== c.id ? v : edge === "in" ? { ...v, in: val } : { ...v, out: val })),
+                      }),
+                      `trim-${c.id}`,
+                    );
+                  },
+                  () => setDragTip(null),
+                );
               };
               return (
                 <div
@@ -226,8 +289,8 @@ export function Timeline({
                     aria-valuenow={Number(c.in.toFixed(2))}
                     aria-valuetext={`${c.in.toFixed(2)} seconds in`}
                     onKeyDown={(e) => keyNudge(e, (dir, fine) => {
-                      const step = (fine ? 1 / 30 : 0.5) * c.speed * dir;
-                      editProject((p) => ({ ...p, video: p.video.map((v) => (v.id !== c.id ? v : { ...v, in: clamp(v.in + step, 0, v.out - 0.1) })) }), `trim-in-${c.id}`);
+                      const stepSec = (fine ? 1 / 30 : 0.5) * c.speed * dir;
+                      editProject((p) => ({ ...p, video: p.video.map((v) => (v.id !== c.id ? v : { ...v, in: clamp(v.in + stepSec, 0, v.out - 0.1) })) }), `trim-in-${c.id}`);
                     })}
                   />
                   {m?.kind === "image" ? <ImageIcon className="ic" /> : <Film className="ic" />}
@@ -244,8 +307,8 @@ export function Timeline({
                     aria-valuenow={Number(c.out.toFixed(2))}
                     aria-valuetext={`${c.out.toFixed(2)} seconds out`}
                     onKeyDown={(e) => keyNudge(e, (dir, fine) => {
-                      const step = (fine ? 1 / 30 : 0.5) * c.speed * dir;
-                      editProject((p) => ({ ...p, video: p.video.map((v) => (v.id !== c.id ? v : { ...v, out: clamp(v.out + step, v.in + 0.1, maxOut) })) }), `trim-out-${c.id}`);
+                      const stepSec = (fine ? 1 / 30 : 0.5) * c.speed * dir;
+                      editProject((p) => ({ ...p, video: p.video.map((v) => (v.id !== c.id ? v : { ...v, out: clamp(v.out + stepSec, v.in + 0.1, maxOut) })) }), `trim-out-${c.id}`);
                     })}
                   />
                 </div>
@@ -259,39 +322,46 @@ export function Timeline({
               const move = (mode: "move" | "start" | "end") => (e: RPointerEvent) => {
                 onSelect({ kind: "text", id: t.id });
                 const s0 = { start: t.start, end: t.end };
-                drag(e, (dx) => {
-                  const d = dx / pps;
-                  editProject(
-                    (p) => ({
-                      ...p,
-                      texts: p.texts.map((x) => {
-                        if (x.id !== t.id) return x;
-                        if (mode === "move") {
-                          const len = s0.end - s0.start;
-                          const start = clamp(s0.start + d, 0, Math.max(0, duration - len));
-                          return { ...x, start, end: start + len };
-                        }
-                        if (mode === "start") return { ...x, start: clamp(s0.start + d, 0, x.end - 0.2) };
-                        return { ...x, end: clamp(s0.end + d, x.start + 0.2, Math.max(duration, x.start + 0.2)) };
-                      }),
-                    }),
-                    `text-${t.id}`,
-                  );
-                });
+                const len = s0.end - s0.start;
+                drag(
+                  e,
+                  (dx, ev) => {
+                    const d = dx / pps;
+                    const bypass = ev.altKey || ev.shiftKey;
+                    if (mode === "move") {
+                      const raw = clamp(s0.start + d, 0, Math.max(0, duration - len));
+                      const start = clamp(snapTime(raw, snapTargets, pps, bypass), 0, Math.max(0, duration - len));
+                      setDragTip({ x: HEAD_W + start * pps, label: fmtTime(start, true) });
+                      editProject((p) => ({ ...p, texts: p.texts.map((x) => (x.id !== t.id ? x : { ...x, start, end: start + len })) }), `text-${t.id}`);
+                    } else if (mode === "start") {
+                      const raw = clamp(s0.start + d, 0, s0.end - 0.2);
+                      const start = clamp(snapTime(raw, snapTargets, pps, bypass), 0, s0.end - 0.2);
+                      setDragTip({ x: HEAD_W + start * pps, label: fmtTime(start, true) });
+                      editProject((p) => ({ ...p, texts: p.texts.map((x) => (x.id !== t.id ? x : { ...x, start })) }), `text-${t.id}`);
+                    } else {
+                      const maxEnd = Math.max(duration, s0.start + 0.2);
+                      const raw = clamp(s0.end + d, s0.start + 0.2, maxEnd);
+                      const end = clamp(snapTime(raw, snapTargets, pps, bypass), s0.start + 0.2, maxEnd);
+                      setDragTip({ x: HEAD_W + end * pps, label: fmtTime(end, true) });
+                      editProject((p) => ({ ...p, texts: p.texts.map((x) => (x.id !== t.id ? x : { ...x, end })) }), `text-${t.id}`);
+                    }
+                  },
+                  () => setDragTip(null),
+                );
               };
               const keyText = (mode: "move" | "start" | "end") => (dir: number, fine: boolean) => {
-                const step = (fine ? 1 / 30 : 0.5) * dir;
+                const stepSec = (fine ? 1 / 30 : 0.5) * dir;
                 editProject((p) => ({
                   ...p,
                   texts: p.texts.map((x) => {
                     if (x.id !== t.id) return x;
                     if (mode === "move") {
                       const len = x.end - x.start;
-                      const start = clamp(x.start + step, 0, Math.max(0, duration - len));
+                      const start = clamp(x.start + stepSec, 0, Math.max(0, duration - len));
                       return { ...x, start, end: start + len };
                     }
-                    if (mode === "start") return { ...x, start: clamp(x.start + step, 0, x.end - 0.2) };
-                    return { ...x, end: clamp(x.end + step, x.start + 0.2, Math.max(duration, x.start + 0.2)) };
+                    if (mode === "start") return { ...x, start: clamp(x.start + stepSec, 0, x.end - 0.2) };
+                    return { ...x, end: clamp(x.end + stepSec, x.start + 0.2, Math.max(duration, x.start + 0.2)) };
                   }),
                 }), `text-key-${t.id}`);
               };
@@ -339,16 +409,24 @@ export function Timeline({
             {project.music.map((c) => {
               const m = mediaById.get(c.mediaId);
               const sel = selection?.kind === "music" && selection.id === c.id;
+              const blockW = Math.max(6, (c.out - c.in) * pps);
               return (
                 <div
                   key={c.id}
                   className={`blk audio${sel ? " sel" : ""}`}
-                  style={{ left: c.start * pps, width: Math.max(6, (c.out - c.in) * pps) }}
+                  style={{ left: c.start * pps, width: blockW }}
                   onPointerDown={(e) => {
                     onSelect({ kind: "music", id: c.id });
                     const s0 = c.start;
-                    drag(e, (dx) =>
-                      editProject((p) => ({ ...p, music: p.music.map((x) => (x.id === c.id ? { ...x, start: Math.max(0, s0 + dx / pps) } : x)) }), `music-${c.id}`),
+                    drag(
+                      e,
+                      (dx, ev) => {
+                        const raw = Math.max(0, s0 + dx / pps);
+                        const start = Math.max(0, snapTime(raw, snapTargets, pps, ev.altKey || ev.shiftKey));
+                        setDragTip({ x: HEAD_W + start * pps, label: fmtTime(start, true) });
+                        editProject((p) => ({ ...p, music: p.music.map((x) => (x.id === c.id ? { ...x, start } : x)) }), `music-${c.id}`);
+                      },
+                      () => setDragTip(null),
                     );
                   }}
                   tabIndex={0}
@@ -359,11 +437,18 @@ export function Timeline({
                   aria-valuenow={Number(c.start.toFixed(2))}
                   aria-valuetext={`${c.start.toFixed(2)} seconds in`}
                   onKeyDown={(e) => keyNudge(e, (dir, fine) => {
-                    const step = (fine ? 1 / 30 : 0.5) * dir;
-                    editProject((p) => ({ ...p, music: p.music.map((x) => (x.id === c.id ? { ...x, start: Math.max(0, x.start + step) } : x)) }), `music-key-${c.id}`);
+                    const stepSec = (fine ? 1 / 30 : 0.5) * dir;
+                    editProject((p) => ({ ...p, music: p.music.map((x) => (x.id === c.id ? { ...x, start: Math.max(0, x.start + stepSec) } : x)) }), `music-key-${c.id}`);
                   })}
                   title={m?.name}
                 >
+                  <AudioWaveform
+                    blobKey={m?.blobKey}
+                    inSec={c.in}
+                    outSec={c.out}
+                    duration={m?.duration ?? c.out}
+                    width={blockW}
+                  />
                   <Music className="ic" />
                   <span>{m?.name ?? "Missing media"}</span>
                 </div>
@@ -376,6 +461,58 @@ export function Timeline({
       </div>
     </div>
   );
+}
+
+function AudioWaveform({
+  blobKey,
+  inSec,
+  outSec,
+  duration,
+  width,
+}: {
+  blobKey: string | undefined;
+  inSec: number;
+  outSec: number;
+  duration: number;
+  width: number;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [peaks, setPeaks] = useState<Float32Array | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void loadWaveformPeaks(blobKey).then((p) => {
+      if (alive) setPeaks(p);
+    });
+    return () => { alive = false; };
+  }, [blobKey]);
+
+  useEffect(() => {
+    const c = canvasRef.current;
+    if (!c || !peaks || !peaks.length || width < 16) return;
+    const w = Math.max(16, Math.round(width));
+    const h = 28;
+    if (c.width !== w) c.width = w;
+    if (c.height !== h) c.height = h;
+    const ctx = c.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, w, h);
+    const totalDur = Math.max(0.1, duration || outSec);
+    const f0 = clamp(inSec / totalDur, 0, 1);
+    const f1 = clamp(outSec / totalDur, f0 + 0.01, 1);
+    const bars = Math.max(4, Math.floor(w / 3));
+    ctx.fillStyle = "rgba(187, 247, 208, 0.32)";
+    for (let i = 0; i < bars; i++) {
+      const frac = f0 + ((i + 0.5) / bars) * (f1 - f0);
+      const idx = Math.min(peaks.length - 1, Math.floor(frac * peaks.length));
+      const amp = Math.max(0.08, peaks[idx]);
+      const bh = Math.max(2, amp * (h - 6));
+      ctx.fillRect(i * 3, (h - bh) / 2, 2, bh);
+    }
+  }, [peaks, inSec, outSec, duration, width]);
+
+  if (!peaks) return null;
+  return <canvas ref={canvasRef} className="tl-wave" aria-hidden="true" />;
 }
 
 function Lane({

@@ -1,0 +1,96 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-18T00:00:00.000Z",
+  "title": "Design System: Clipweave",
+  "extensions": {
+    "colorMeta": {
+      "primary": { "role": "primary", "displayName": "Signal Cyan", "canonical": "#38bdf8", "tonalRamp": ["#062c3d", "#0b4a63", "#0f6b8a", "#158bb3", "#2aa7d4", "#38bdf8", "#7dd3fc", "#d4f1ff"] },
+      "neutral-bg": { "role": "neutral", "displayName": "Room Black", "canonical": "#0a0a0a", "tonalRamp": ["#000000", "#0a0a0a", "#111111", "#18181b", "#27272a", "#3f3f46", "#71717a", "#fafafa"] }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "Page and empty-state headings." },
+      "body": { "displayName": "Body", "purpose": "Dense operational UI copy." }
+    },
+    "shadows": [
+      { "name": "control-lift", "value": "0 2px 8px -2px rgba(0,0,0,0.55)", "purpose": "Neutral elevation on primary controls." }
+    ],
+    "motion": [
+      { "name": "page-in", "value": "cubic-bezier(0.2, 0.75, 0.2, 1)", "purpose": "Single authored entrance for screen arrival." }
+    ],
+    "breakpoints": [
+      { "name": "compact", "value": "900px" },
+      { "name": "editor", "value": "1100px" },
+      { "name": "narrow-nav", "value": "980px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The single obvious action in a region.",
+      "html": "<button class=\"ds-btn-primary\">Render</button>",
+      "css": ".ds-btn-primary { background: var(--brand, #38bdf8); color: var(--brand-ink, #04121a); padding: 10px 18px; border: 0; border-radius: 12px; font: 600 13px/1.15 'Inter Variable', sans-serif; box-shadow: 0 2px 8px -2px rgba(0,0,0,.55); cursor: pointer; } .ds-btn-primary:hover { filter: brightness(1.05); } .ds-btn-primary:focus-visible { outline: 2px solid var(--brand, #38bdf8); outline-offset: 2px; }"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Secondary action with a quiet surface.",
+      "html": "<button class=\"ds-btn-ghost\">Cancel</button>",
+      "css": ".ds-btn-ghost { background: var(--pill, #1a1a1a); color: var(--fg, #fafafa); padding: 10px 18px; border: 1px solid var(--hairline, rgba(255,255,255,.09)); border-radius: 12px; font: 600 13px/1.15 'Inter Variable', sans-serif; cursor: pointer; } .ds-btn-ghost:hover { filter: brightness(1.18); } .ds-btn-ghost:focus-visible { outline: 2px solid var(--brand, #38bdf8); outline-offset: 2px; }"
+    },
+    {
+      "name": "Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "Panel surface for grouped content.",
+      "html": "<div class=\"ds-card\">Clip Finder</div>",
+      "css": ".ds-card { background: var(--card, #161719); color: var(--fg, #fafafa); border: 1px solid var(--hairline, rgba(255,255,255,.09)); border-radius: 16px; padding: 16px; font: 400 14px/1.5 'Inter Variable', sans-serif; }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Single-line field.",
+      "html": "<input class=\"ds-input\" placeholder=\"Paste a link\" />",
+      "css": ".ds-input { background: var(--pill, #1a1a1a); color: var(--fg, #fafafa); border: 1px solid var(--hairline, rgba(255,255,255,.09)); border-radius: 10px; padding: 9px 12px; font: 400 13px/1.5 'Inter Variable', sans-serif; } .ds-input:focus { outline: none; border-color: rgba(var(--brand-rgb, 56,189,248), .6); box-shadow: 0 0 0 3px rgba(var(--brand-rgb, 56,189,248), .14); }"
+    },
+    {
+      "name": "Accent Chip",
+      "kind": "chip",
+      "refersTo": "chip",
+      "description": "Status or count badge.",
+      "html": "<span class=\"ds-chip\">AI 8/10</span>",
+      "css": ".ds-chip { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 12px; background: var(--brand-soft, rgba(56,189,248,.14)); color: var(--brand-light, #7dd3fc); font: 600 11.5px/1 'Inter Variable', sans-serif; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Quiet Cutting Room",
+    "overview": "Clipweave is an operator's tool, not a marketing page. The interface behaves like a dim editing suite: near-black surfaces, one cyan instrument light, dense but breathable panels, and controls that stay out of the footage. Every screen exists to keep the user's eye on the preview, the timeline, and the next decision.",
+    "keyCharacteristics": [
+      "Near-black chrome with a single cyan accent, never a rainbow.",
+      "Side-by-side icon and heading in empty states — no stacked feature-card template.",
+      "Flat surfaces; neutral shadows only, never colored halos.",
+      "Compact 12–16px radii, 8px rhythm, 11px minimum functional text.",
+      "Motion is one authored page entrance, not scattered effects."
+    ],
+    "rules": [
+      { "name": "The One Light Rule", "body": "Cyan marks the current action or live state. If everything is cyan, nothing is.", "section": "colors" },
+      { "name": "The No Tiny Text Rule", "body": "Functional text never drops below 11px; 10.5px was a drift, not a style.", "section": "typography" },
+      { "name": "The Neutral Shadow Rule", "body": "Shadows are black and offset. A colored glow means a lighting bug.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do use --brand and its derived tokens for every accent surface.",
+      "Do keep icon and heading side-by-side in empty states.",
+      "Do use text-wrap: pretty on paragraphs so no single word is stranded.",
+      "Do keep minimum functional text at 11px."
+    ],
+    "donts": [
+      "Don't use colored glow shadows or zero-offset chromatic halos on dark surfaces.",
+      "Don't stack an icon tile above a heading as the page structure.",
+      "Don't introduce a second accent hue for decoration.",
+      "Don't animate layout properties for casual state changes."
+    ]
+  }
+}

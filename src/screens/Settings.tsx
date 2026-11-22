@@ -1,14 +1,45 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Check, HardDrive, Palette, Scissors, Clapperboard, Download, Sparkles } from "lucide-react";
 import { useLibrary, useQueue, useStore } from "../store";
 import { chatCompletion, tryParseJson } from "../lib/ai/openai";
-import { listSpeechModels, downloadSpeechModel, speechModelStatus, type SpeechModel } from "../platform/api/models";
+import { loadFeedbackStats, resetFeedbackStats } from "../lib/ai/feedback";
+import { listSpeechModels, installSpeechModel, type SpeechModel } from "../platform/api/models";
 import { ACCENTS, BACKGROUNDS, THEMES, type ButtonStyle, type Settings as S } from "../lib/settings";
 import { AutoTextarea, Field, Modal, Seg, Switch } from "../components/ui";
 import { clearBlobs } from "../lib/db";
 import { fileNameFor } from "../lib/project";
 import { fmtBytes } from "../lib/util";
 import { canPickFolder, clearRenderFolder, getRenderFolder, pickRenderFolder } from "../lib/renderFolder";
+
+interface ServerHealth {
+  ok: boolean;
+  ffmpeg: boolean;
+  ytDlp: boolean;
+  nemo: boolean;
+  opencv: boolean;
+  streamlink: boolean;
+  scenedetect: boolean;
+  sceneBackend: "pyscenedetect" | "ffmpeg" | null;
+  gemini: boolean;
+  nvenc: boolean;
+  audiocpp?: boolean;
+  audiocppParakeet?: boolean;
+}
+
+function useServerHealth(): ServerHealth | null {
+  const [health, setHealth] = useState<ServerHealth | null>(null);
+  useEffect(() => {
+    let alive = true;
+    fetch("/api/health")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((h) => {
+        if (alive && h && typeof h === "object") setHealth(h as ServerHealth);
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  return health;
+}
 
 type Section = "appearance" | "capture" | "editor" | "ai" | "export" | "data";
 
@@ -35,6 +66,7 @@ function SettingRow({ title, desc, children, wide }: { title: string; desc?: str
 
 export function Settings() {
   const [section, setSection] = useState<Section>("appearance");
+  const health = useServerHealth();
   return (
     <main className="page settings">
       <div className="pagehead">
@@ -55,8 +87,8 @@ export function Settings() {
           {section === "appearance" && <Appearance />}
           {section === "capture" && <Capture />}
           {section === "editor" && <EditorDefaults />}
-          {section === "ai" && <AiSettings />}
-          {section === "export" && <Export />}
+          {section === "ai" && <AiSettings health={health} />}
+          {section === "export" && <Export health={health} />}
           {section === "data" && <Data />}
         </div>
       </div>
@@ -157,19 +189,13 @@ function Appearance() {
   );
 }
 
-const SAVE_PRESETS = [
-  { seconds: 900, label: "15 min" },
-  { seconds: 1800, label: "30 min" },
-  { seconds: 2700, label: "45 min" },
-  { seconds: 3600, label: "1 hour" },
-];
-const PRESET_SECONDS = SAVE_PRESETS.map((p) => p.seconds);
+const SAVE_PRESETS = [30, 60, 120, 180, 300, 600, 900, 1800, 3600];
 
 function RecordInterval() {
   const { settings, updateSettings } = useStore();
   const value = settings.recordSaveSeconds;
-  const [customMinutes, setCustomMinutes] = useState(() => String(Math.max(1, Math.round(value / 60))));
-  const [showCustom, setShowCustom] = useState(!PRESET_SECONDS.includes(value));
+  const [custom, setCustom] = useState(value);
+  const [showCustom, setShowCustom] = useState(!SAVE_PRESETS.includes(value));
   return (
     <div className="interval-ctl">
       <select
@@ -177,46 +203,32 @@ function RecordInterval() {
         aria-label="Auto-save recording interval"
         value={showCustom ? "custom" : value}
         onChange={(e) => {
-          if (e.target.value === "custom") {
-            setCustomMinutes(String(Math.max(1, Math.round(value / 60))));
-            setShowCustom(true);
-          } else {
-            setShowCustom(false);
-            updateSettings({ recordSaveSeconds: Number(e.target.value) });
-          }
+          if (e.target.value === "custom") { setCustom(value); setShowCustom(true); }
+          else { setShowCustom(false); updateSettings({ recordSaveSeconds: Number(e.target.value) }); }
         }}
       >
-        {SAVE_PRESETS.map((p) => (
-          <option key={p.seconds} value={p.seconds}>{p.label}</option>
+        {SAVE_PRESETS.map((s) => (
+          <option key={s} value={s}>{s < 60 ? `${s} seconds` : `${s / 60} min`}</option>
         ))}
-        <option value="custom">Custom (minutes)…</option>
+        <option value="custom">Custom…</option>
       </select>
       {showCustom && (
         <div className="row interval-custom">
           <input
             className="input"
             type="number"
-            min={1}
-            max={240}
-            step={1}
-            value={customMinutes}
-            aria-label="Custom interval in minutes"
+            min={30}
+            max={7200}
+            step={5}
+            value={custom}
+            aria-label="Custom interval in seconds"
             onChange={(e) => {
-              const raw = e.target.value;
-              setCustomMinutes(raw);
-              const n = Number(raw);
-              if (raw.trim() !== "" && Number.isFinite(n) && n >= 1 && n <= 240) {
-                updateSettings({ recordSaveSeconds: Math.round(n * 60) });
-              }
-            }}
-            onBlur={() => {
-              const n = Number(customMinutes);
-              const clamped = Number.isFinite(n) && n >= 1 ? Math.min(240, Math.round(n)) : Math.max(1, Math.round(value / 60));
-              setCustomMinutes(String(clamped));
-              updateSettings({ recordSaveSeconds: clamped * 60 });
+              const n = Number(e.target.value);
+              setCustom(n);
+              if (Number.isFinite(n) && n >= 30 && n <= 7200) updateSettings({ recordSaveSeconds: Math.round(n) });
             }}
           />
-          <span className="muted">minutes</span>
+          <span className="muted">seconds</span>
         </div>
       )}
     </div>
@@ -241,7 +253,7 @@ function Capture() {
       <SettingRow title="Hassle-free recording" desc="Record every stream in real time from the moment it opens. The recorder shares the video capture with the rolling buffer. Turn it off to stop recording; the current segment is still saved.">
         <Switch label="Hassle-free recording" checked={settings.autoRecord} onChange={(autoRecord) => updateSettings({ autoRecord })} />
       </SettingRow>
-      <SettingRow title="Auto-save recording every" desc="Choose 15, 30, 45 min, 1 hour, or set any custom duration in minutes (1–240 min). Each save finishes one clip and starts a fresh recording seamlessly.">
+      <SettingRow title="Auto-save recording every" desc="Pick a preset or set any interval from 30 seconds to 2 hours. Each save closes one clip and starts a fresh recording.">
         <RecordInterval />
       </SettingRow>
       <SettingRow title="Recording quality" desc="Full HD raises the bitrate and lets HLS use a 1080p rendition. Smooth keeps the lower bitrate and caps HLS to a small rendition when several streams run at once.">
@@ -305,15 +317,15 @@ function EditorDefaults() {
             options={[
               { value: "fill", label: "Fill" },
               { value: "fit", label: "Fit" },
-              { value: "split", label: "Facecam + game" },
+              { value: "split", label: "Facecam" },
             ]}
           />
         </SettingRow>
         <SettingRow title="Auto 9:16 Fit in Editor" desc="Open every clip with the vertical 9:16 frame and Fit layout already applied, zoom reset to 1×.">
           <Switch label="Auto 9:16 Fit in Editor" checked={settings.autoFitOnOpen} onChange={(autoFitOnOpen) => updateSettings({ autoFitOnOpen })} />
         </SettingRow>
-        <SettingRow title="Auto face detection" desc="Automatically detect and frame the facecam in Facecam + game mode (on by default). Drag or resize the Facecam box in Frame anytime to adjust manually.">
-          <Switch label="Auto face detection" checked={settings.autoFacecamOnOpen} onChange={(autoFacecamOnOpen) => updateSettings({ autoFacecamOnOpen })} />
+        <SettingRow title="Auto face + game detection" desc="When the Editor opens a clip, detect the facecam automatically and switch to the split layout — game on top, facecam below. Needs OpenCV Python or a Gemini key; Frame → Detect with AI retries manually.">
+          <Switch label="Auto face + game detection" checked={settings.autoFacecamOnOpen} onChange={(autoFacecamOnOpen) => updateSettings({ autoFacecamOnOpen })} />
         </SettingRow>
         <SettingRow title="Caption font">
           <Seg
@@ -348,13 +360,15 @@ function EditorDefaults() {
   );
 }
 
-function AiSettings() {
+function AiSettings({ health }: { health: ServerHealth | null }) {
   const { settings, updateSettings, toast } = useStore();
   const [testing, setTesting] = useState(false);
   const [testMsg, setTestMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [models, setModels] = useState<SpeechModel[]>([]);
   const [modelBusy, setModelBusy] = useState(false);
   const [modelLog, setModelLog] = useState("");
+  const [modelProgress, setModelProgress] = useState(0);
+  const [feedback, setFeedback] = useState(() => loadFeedbackStats());
 
   const refreshModels = async () => {
     try { setModels(await listSpeechModels()); } catch { /* local server may be starting */ }
@@ -364,15 +378,12 @@ function AiSettings() {
   const downloadModel = async (id: string) => {
     setModelBusy(true);
     setModelLog("Starting download…");
+    setModelProgress(0);
     try {
-      const job = await downloadSpeechModel(id);
-      for (let i = 0; i < 1800; i++) {
-        const s = await speechModelStatus(job.id || id);
+      await installSpeechModel(id, (s) => {
         if (s.log) setModelLog(s.log.split("\n").slice(-3).join(" "));
-        if (s.status === "ready") break;
-        if (s.status === "failed") throw new Error(s.log || "Download failed");
-        await new Promise((r) => setTimeout(r, 1000));
-      }
+        setModelProgress(Math.max(0, Math.min(100, Number(s.progress) || 0)));
+      });
       updateSettings({ captionModel: id as S["captionModel"] });
       await refreshModels();
       toast("Model downloaded and selected.", "success");
@@ -381,6 +392,7 @@ function AiSettings() {
     } finally {
       setModelBusy(false);
       setModelLog("");
+      setModelProgress(0);
     }
   };
 
@@ -413,167 +425,198 @@ function AiSettings() {
   };
 
   return (
-    <div className="set-group card">
-      <SettingRow wide title="Endpoint" desc="Where AI requests go: Google AI Studio (Gemini) on the server, or any OpenAI-compatible AI (OpenAI, Kilo Gateway, OpenRouter, Groq, Together, Google Colab MiMo, Local Ollama).">
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <Seg<"gemini" | "openai" | "cloud" | "local" | "kilo">
-            label="AI endpoint"
-            value={settings.aiProfile}
-            onChange={(aiProfile) => { updateSettings({ aiProfile }); setTestMsg(null); }}
-            options={[
-              { value: "gemini", label: "AI Studio (Gemini)" },
-              { value: "openai", label: "OpenAI / Custom" },
-              { value: "kilo", label: "Kilo Gateway" },
-              { value: "cloud", label: "Cloud (Colab)" },
-              { value: "local", label: "Local Ollama" },
-            ]}
-          />
-          {(() => {
-            const profile = settings.aiProfile;
-            const p = profile === "cloud" ? settings.aiCloud
-              : profile === "gemini" ? settings.aiGemini
-                : profile === "openai" ? settings.aiOpenAi
-                  : profile === "kilo" ? settings.aiKilo
-                    : settings.aiLocal;
-            const set = (patch: Partial<typeof p>) => {
-              updateSettings(
-                profile === "cloud" ? { aiCloud: { ...settings.aiCloud, ...patch } }
-                  : profile === "gemini" ? { aiGemini: { ...settings.aiGemini, ...patch } }
-                    : profile === "openai" ? { aiOpenAi: { ...settings.aiOpenAi, ...patch } }
-                      : profile === "kilo" ? { aiKilo: { ...settings.aiKilo, ...patch } }
-                        : { aiLocal: { ...settings.aiLocal, ...patch } },
-              );
-              setTestMsg(null);
-            };
-            return (
-              <>
-                {profile === "gemini" ? (
-                  <input
-                    className="input"
-                    type="password"
-                    value={p.apiKey}
-                    placeholder="AI Studio API key (optional when the server sets GEMINI_API_KEY)"
-                    onChange={(e) => set({ apiKey: e.target.value })}
-                    aria-label="Gemini API key"
-                  />
-                ) : (
-                  <>
-                    <input className="input" value={p.baseUrl} placeholder={profile === "openai" ? "https://api.openai.com/v1" : profile === "kilo" ? "https://rjvi38q.abc-tunnel.us/v1" : profile === "cloud" ? "https://xxxx.trycloudflare.com/v1" : "http://localhost:11434/v1"} onChange={(e) => set({ baseUrl: e.target.value })} aria-label="AI base URL" />
-                    <input className="input" type="password" value={p.apiKey} placeholder={profile === "openai" ? "sk-... API key for your provider" : profile === "kilo" ? "sk-... API key for Kilo Gateway" : "sk-... (leave empty for local Ollama)"} onChange={(e) => set({ apiKey: e.target.value })} aria-label="AI API key" />
-                  </>
-                )}
-                <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 280 }}>
-                  <input
-                    className="input"
-                    list={profile === "gemini" ? "gemini-model-options" : undefined}
-                    value={p.model}
-                    placeholder={profile === "gemini" ? "gemini-4-hydrogen (type any model name)" : profile === "openai" ? "gpt-4o-mini" : profile === "kilo" ? "kc/kilo-auto/free" : "mimo-v2.6-heretic"}
-                    onChange={(e) => set({ model: e.target.value })}
-                    aria-label="AI model"
-                  />
-                  {profile === "gemini" && (
-                    <datalist id="gemini-model-options">
-                      <option value="gemini-4-hydrogen">Recommended: multimodal audio + video + fast</option>
-                      <option value="gemini-3.1-flash-lite">Ultra-fast lightweight</option>
-                    </datalist>
-                  )}
-                  <div className="row" style={{ gap: 8, alignItems: "center" }}>
-                    <button className="btn ghost sm" onClick={() => void testConnection()} disabled={testing}>
-                      {testing ? <span className="spinner" /> : null} Test connection
-                    </button>
-                    {testMsg && <span style={{ fontSize: 12, color: testMsg.ok ? "var(--success)" : "var(--live)" }}>{testMsg.text}</span>}
-                  </div>
-                  {settings.aiProfile === "cloud" && (
-                    <p className="muted" style={{ fontSize: 11.5, lineHeight: 1.5 }}>
-                      Run <code>mimo_v26_heretic_ollama_colab.ipynb</code> on a T4 runtime with <b>Run all</b>, then paste the printed Base URL and API key here. The tunnel URL and key change every time the notebook re-runs (unless you pin <code>API_KEY</code> in the Config cell).
-                    </p>
-                  )}
-                  {settings.aiProfile === "gemini" && (
-                    <p className="muted" style={{ fontSize: 11.5, lineHeight: 1.5 }}>
-                      Paste a Google AI Studio API key above, or leave it empty to use the server's <code>GEMINI_API_KEY</code> secret. The key powers AI chat, viral clip scoring, titles and live judging.
-                    </p>
-                  )}
-                  {settings.aiProfile === "kilo" && (
-                    <p className="muted" style={{ fontSize: 11.5, lineHeight: 1.5 }}>
-                      Preconfigured OpenAI-compatible Kilo Gateway route with the <code>kc/kilo-auto/free</code> model. Paste your API key above (saved locally in settings), then press Test connection. The base URL and model are editable.
-                    </p>
-                  )}
-                  {settings.aiProfile === "openai" && (
-                    <p className="muted" style={{ fontSize: 11.5, lineHeight: 1.5 }}>
-                      Any provider that speaks the OpenAI chat-completions API works here: OpenAI, OpenRouter, Groq, Together, LM Studio, vLLM, or your own gateway. Enter its base URL (ending in <code>/v1</code>), your key and a model name, then press Test connection.
-                    </p>
-                  )}
-                </div>
-              </>
-            );
-          })()}
+    <>
+      {health && (
+        <div className="cap-badges" aria-label="Server capabilities">
+          <span className={`chip ${health.ffmpeg ? "success" : "danger"}`}>
+            FFmpeg {health.ffmpeg ? (health.nvenc ? "· NVENC" : "· CPU") : "missing"}
+          </span>
+          <span className={`chip ${health.gemini ? "success" : ""}`}>
+            Gemini {health.gemini ? "server key" : "key needed"}
+          </span>
+          <span className={`chip ${health.scenedetect ? "success" : ""}`}>
+            Scenes {health.sceneBackend === "pyscenedetect" ? "· PySceneDetect" : health.sceneBackend === "ffmpeg" ? "· FFmpeg" : "unavailable"}
+          </span>
+          <span className={`chip ${health.streamlink ? "success" : ""}`}>
+            Streamlink {health.streamlink ? "ready" : "optional"}
+          </span>
+          <span className={`chip ${health.opencv ? "success" : ""}`}>
+            OpenCV {health.opencv ? "ready" : "YuNet / Gemini fallback"}
+          </span>
+          <span className={`chip ${health.audiocpp || health.nemo ? "success" : ""}`}>
+            Speech {health.audiocpp ? "· audio.cpp" : health.nemo ? "· NeMo" : "· Gemini fallback"}
+          </span>
         </div>
-      </SettingRow>
-      <SettingRow title="NeMo-Speech / caption service" desc="Optional external nemo-speech HTTP URL. When empty, Clipweave uses local nemo-speech if installed or automatically falls back to AI Studio Gemini for transcription & word-level captions.">
-        <input className="input" value={settings.nemoSpeechUrl} placeholder="http://127.0.0.1:8081 (optional)" onChange={(e) => updateSettings({ nemoSpeechUrl: e.target.value })} aria-label="NeMo-Speech URL" />
-      </SettingRow>
-      <SettingRow title="Caption model" desc="Local NeMo speech model (when running locally with nemo-speech). Inside AI Studio, Gemini handles transcription and captions automatically.">
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 280 }}>
+      )}
+
+      <div className="set-group card">
+        <SettingRow wide title="Endpoint" desc="Where AI requests go: Google AI Studio (Gemini) on the server, or any OpenAI-compatible AI (OpenAI, 9Router, OpenRouter, Groq, Together, Google Colab MiMo, Local Ollama).">
+          <div className="ai-stack">
+            <Seg<"gemini" | "openai" | "cloud" | "local" | "kilo">
+              label="AI endpoint"
+              value={settings.aiProfile}
+              onChange={(aiProfile) => { updateSettings({ aiProfile }); setTestMsg(null); }}
+              options={[
+                { value: "gemini", label: "AI Studio (Gemini)" },
+                { value: "openai", label: "OpenAI / Custom" },
+                { value: "kilo", label: "9Router" },
+                { value: "cloud", label: "Cloud (Colab)" },
+                { value: "local", label: "Local Ollama" },
+              ]}
+            />
+            {(() => {
+              const profile = settings.aiProfile;
+              const p = profile === "cloud" ? settings.aiCloud
+                : profile === "gemini" ? settings.aiGemini
+                  : profile === "openai" ? settings.aiOpenAi
+                    : profile === "kilo" ? settings.aiKilo
+                      : settings.aiLocal;
+              const set = (patch: Partial<typeof p>) => {
+                updateSettings(
+                  profile === "cloud" ? { aiCloud: { ...settings.aiCloud, ...patch } }
+                    : profile === "gemini" ? { aiGemini: { ...settings.aiGemini, ...patch } }
+                      : profile === "openai" ? { aiOpenAi: { ...settings.aiOpenAi, ...patch } }
+                        : profile === "kilo" ? { aiKilo: { ...settings.aiKilo, ...patch } }
+                          : { aiLocal: { ...settings.aiLocal, ...patch } },
+                );
+                setTestMsg(null);
+              };
+              return (
+                <>
+                  {profile === "gemini" ? (
+                    <input
+                      className="input"
+                      type="password"
+                      value={p.apiKey}
+                      placeholder="AI Studio API key (optional when the server sets GEMINI_API_KEY)"
+                      onChange={(e) => set({ apiKey: e.target.value })}
+                      aria-label="Gemini API key"
+                    />
+                  ) : (
+                    <>
+                      <input className="input" value={p.baseUrl} placeholder={profile === "openai" ? "https://api.openai.com/v1" : profile === "kilo" ? "https://your-tunnel.example/v1" : profile === "cloud" ? "https://xxxx.trycloudflare.com/v1" : "http://localhost:11434/v1"} onChange={(e) => set({ baseUrl: e.target.value })} aria-label="AI base URL" />
+                      <input className="input" type="password" value={p.apiKey} placeholder={profile === "openai" ? "sk-... API key for your provider" : profile === "kilo" ? "sk-... API key for 9Router" : "sk-... (leave empty for local Ollama)"} onChange={(e) => set({ apiKey: e.target.value })} aria-label="AI API key" />
+                    </>
+                  )}
+                  <div className="ai-stack">
+                    <input
+                      className="input"
+                      list={profile === "gemini" ? "gemini-model-options" : undefined}
+                      value={p.model}
+                      placeholder={profile === "gemini" ? "gemini-4-hydrogen (type any model name)" : profile === "openai" ? "gpt-4o-mini" : profile === "kilo" ? "kc/kilo-auto/free" : "mimo-v2.6-heretic"}
+                      onChange={(e) => set({ model: e.target.value })}
+                      aria-label="AI model"
+                    />
+                    {profile === "gemini" && (
+                      <datalist id="gemini-model-options">
+                        <option value="gemini-4-hydrogen">Recommended: multimodal audio + video + fast</option>
+                        <option value="gemini-3.1-flash-lite">Ultra-fast lightweight</option>
+                      </datalist>
+                    )}
+                    <div className="row test-row">
+                      <button className="btn ghost sm" onClick={() => void testConnection()} disabled={testing}>
+                        {testing ? <span className="spinner" /> : null} Test connection
+                      </button>
+                      {testMsg && <span className={`test-msg ${testMsg.ok ? "ok" : "err"}`}>{testMsg.text}</span>}
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        </SettingRow>
+        <SettingRow title="AI auto clip finder" desc="While streams or captured tabs are open, Clipweave samples audio and video frames, detects energy spikes, scores viral potential with AI, and saves clips at or above your threshold.">
+          <Switch label="AI auto clip finder" checked={settings.aiAutoClip} onChange={(aiAutoClip) => updateSettings({ aiAutoClip })} />
+        </SettingRow>
+        <SettingRow title="Check interval" desc="How often AI listens to each open stream. Audio energy spikes also trigger extra checks on cooldown.">
           <select
             className="select"
-            value={settings.captionModel}
-            onChange={(e) => updateSettings({ captionModel: e.target.value as S["captionModel"] })}
-            aria-label="Caption model"
+            value={settings.aiClipInterval}
+            onChange={(e) => updateSettings({ aiClipInterval: Number(e.target.value) })}
+            aria-label="AI check interval"
           >
-            {models.length === 0 && <option value={settings.captionModel}>{settings.captionModel}</option>}
-            {models.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.label}{m.installed ? " ✓" : ` · download (${m.size})`}
+            {Array.from({ length: 13 }, (_, i) => i + 3).map((m) => (
+              <option key={m} value={m}>
+                {m} min
               </option>
             ))}
           </select>
-          <div className="row" style={{ gap: 8 }}>
-            <button
-              className="btn ghost sm"
-              disabled={modelBusy || !models.find((m) => m.id === settings.captionModel && !m.installed)}
-              onClick={() => void downloadModel(settings.captionModel)}
+        </SettingRow>
+        <SettingRow title="Clip threshold" desc="Minimum AI score (1-10) before a moment is saved to Clips. Higher = fewer, better clips.">
+          <Seg<S["aiClipThreshold"]>
+            label="AI clip threshold"
+            value={settings.aiClipThreshold}
+            onChange={(aiClipThreshold) => updateSettings({ aiClipThreshold })}
+            options={[3, 5, 7, 8, 9].map((v) => ({ value: v as S["aiClipThreshold"], label: String(v) }))}
+          />
+        </SettingRow>
+      </div>
+
+      <details className="set-advanced set-group card">
+        <summary>Advanced models, prompt &amp; calibration</summary>
+        <SettingRow title="NeMo-Speech / caption service" desc="Optional external nemo-speech HTTP URL. Clipweave prefers its own audio.cpp runtime (installed automatically with the default model below), then local nemo-speech, and finally falls back to AI Studio Gemini for transcription & word-level captions.">
+          <input className="input" value={settings.nemoSpeechUrl} placeholder="http://127.0.0.1:8081 (optional)" onChange={(e) => updateSettings({ nemoSpeechUrl: e.target.value })} aria-label="NeMo-Speech URL" />
+        </SettingRow>
+        <SettingRow title="Caption model" desc="Local speech model with word-level timestamps. Download & use provisions the audio.cpp runtime and the model into this machine — no other installs needed. Inside AI Studio, Gemini handles transcription automatically.">
+          <div className="ai-stack">
+            <select
+              className="select"
+              value={settings.captionModel}
+              onChange={(e) => updateSettings({ captionModel: e.target.value as S["captionModel"] })}
+              aria-label="Caption model"
             >
-              {modelBusy ? <span className="spinner" /> : <Download className="ic" />}
-              {modelBusy ? "Downloading…" : "Download & use"}
-            </button>
-            <button className="btn plain sm" onClick={() => void refreshModels()} disabled={modelBusy}>Refresh</button>
+              {models.length === 0 && <option value={settings.captionModel}>{settings.captionModel}</option>}
+              {models.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}{m.installed ? ` ✓${m.backend ? ` (${m.backend})` : ""}` : ` · download (${m.size})`}
+                </option>
+              ))}
+            </select>
+            <div className="row">
+              <button
+                className="btn ghost sm"
+                disabled={modelBusy || !models.find((m) => m.id === settings.captionModel && !m.installed)}
+                onClick={() => void downloadModel(settings.captionModel)}
+              >
+                {modelBusy ? <span className="spinner" /> : <Download className="ic" />}
+                {modelBusy ? "Downloading…" : "Download & use"}
+              </button>
+              <button className="btn plain sm" onClick={() => void refreshModels()} disabled={modelBusy}>Refresh</button>
+            </div>
+            {modelBusy && modelProgress > 0 && (
+              <progress value={modelProgress} max={100} aria-label="Caption model download progress" />
+            )}
+            {modelLog && <small className="muted model-log" role="status" aria-live="polite">{modelLog}</small>}
           </div>
-          {modelLog && <small className="muted" role="status" aria-live="polite" style={{ fontSize: 11.5, lineHeight: 1.4 }}>{modelLog}</small>}
-        </div>
-      </SettingRow>
-      <SettingRow wide title="AI clip-finding instructions" desc="Prompt used when asking AI to find the best viral moments from audio/video/transcripts.">
-        <AutoTextarea value={settings.aiClipPrompt} onChange={(aiClipPrompt) => updateSettings({ aiClipPrompt })} label="AI clip prompt" />
-      </SettingRow>
-      <SettingRow title="AI auto clip finder" desc="While streams or captured tabs are open, Clipweave samples audio and video frames, scores viral potential with AI, and saves clips at or above your threshold.">
-        <Switch label="AI auto clip finder" checked={settings.aiAutoClip} onChange={(aiAutoClip) => updateSettings({ aiAutoClip })} />
-      </SettingRow>
-      <SettingRow title="Check interval" desc="How often AI listens to each open stream. More often catches more moments but uses more GPU/AI calls.">
-        <select
-          className="select"
-          value={settings.aiClipInterval}
-          onChange={(e) => updateSettings({ aiClipInterval: Number(e.target.value) })}
-          aria-label="AI check interval"
+        </SettingRow>
+        <SettingRow wide title="AI clip-finding instructions" desc="Prompt used when asking AI to find the best viral moments from audio/video/transcripts.">
+          <AutoTextarea value={settings.aiClipPrompt} onChange={(aiClipPrompt) => updateSettings({ aiClipPrompt })} label="AI clip prompt" />
+        </SettingRow>
+        <SettingRow
+          title="Creator feedback calibration"
+          desc={
+            feedback.total > 0
+              ? `${feedback.total} signals saved (${feedback.favourites + feedback.edited + feedback.rendered} kept · ${feedback.dismissed} dismissed). Used automatically to tune future AI clip picks.`
+              : "Clips you favourite, edit, render, or dismiss teach the AI your taste over time."
+          }
         >
-          {Array.from({ length: 13 }, (_, i) => i + 3).map((m) => (
-            <option key={m} value={m}>
-              {m} min
-            </option>
-          ))}
-        </select>
-      </SettingRow>
-      <SettingRow title="Clip threshold" desc="Minimum AI score (1-10) before a moment is saved to Clips. Higher = fewer, better clips.">
-        <Seg<S["aiClipThreshold"]>
-          label="AI clip threshold"
-          value={settings.aiClipThreshold}
-          onChange={(aiClipThreshold) => updateSettings({ aiClipThreshold })}
-          options={[3, 5, 7, 8, 9].map((v) => ({ value: v as S["aiClipThreshold"], label: String(v) }))}
-        />
-      </SettingRow>
-    </div>
+          <button
+            className="btn ghost sm"
+            disabled={feedback.total === 0}
+            onClick={() => {
+              setFeedback(resetFeedbackStats());
+              toast("AI calibration history cleared.", "info");
+            }}
+          >
+            Reset calibration
+          </button>
+        </SettingRow>
+      </details>
+    </>
   );
 }
 
-function Export() {
+function Export({ health }: { health: ServerHealth | null }) {
   const { settings, updateSettings, toast } = useStore();
   const [folder, setFolder] = useState<string | null>(null);
   useEffect(() => { void getRenderFolder().then((d) => setFolder(d?.name || null)); }, []);
@@ -602,10 +645,7 @@ function Export() {
           ]}
         />
       </SettingRow>
-      <SettingRow title="Frame rate" desc="Export frame rate (30–120 fps). Native FFmpeg renders cleanly at any selected rate so fast gameplay stays smooth.">
-        <Seg<S["exportFps"]> label="Frame rate" value={settings.exportFps} onChange={(exportFps) => updateSettings({ exportFps })} options={[{ value: 30, label: "30 fps" }, { value: 60, label: "60 fps" }, { value: 90, label: "90 fps" }, { value: 120, label: "120 fps" }]} />
-      </SettingRow>
-      <SettingRow title="Format" desc="MP4 uses hardware/H.264 when FFmpeg is available, or browser encoding otherwise. WebM is smaller.">
+      <SettingRow title="Format" desc="MP4 is default with native FFmpeg. WebM is smaller and natively supported in-browser.">
         <Seg<S["exportFormat"]>
           label="Format"
           value={settings.exportFormat}
@@ -613,11 +653,20 @@ function Export() {
           options={[{ value: "webm", label: "WebM" }, { value: "mp4", label: "MP4" }]}
         />
       </SettingRow>
-      <SettingRow title="File name" desc={`Use {title}, {date} and {time}. Next file: “${fileNameFor(settings.fileNamePattern, "Big Buck Bunny")}”`}>
+      <SettingRow title="File name" desc={`Use {title}, {date} and {time}. Next file: “${fileNameFor(settings.fileNamePattern, "Highlight Clip")}”`}>
         <input className="input" value={settings.fileNamePattern} maxLength={80} onChange={(e) => updateSettings({ fileNamePattern: e.target.value })} aria-label="File name pattern" />
       </SettingRow>
-      <SettingRow title="Render engine" desc="Uses fast server FFmpeg by default (up to 120 fps, sharp Lanczos scaling), falling back to in-browser rendering automatically if FFmpeg is unavailable.">
-        <span className="muted" style={{ fontSize: 12.5 }}>FFmpeg + Browser</span>
+      <SettingRow
+        title="Active renderer"
+        desc={
+          health?.ffmpeg
+            ? "Fast server-side FFmpeg encoding runs automatically with burned captions and zero tab-focus requirement. Falls back to browser capture if offline."
+            : "Server FFmpeg not detected; rendering runs in this tab with MediaRecorder while it stays visible."
+        }
+      >
+        <span className={`chip ${health?.ffmpeg ? "success" : ""}`}>
+          {health?.ffmpeg ? `Native FFmpeg (${health.nvenc ? "GPU NVENC" : "CPU"})` : "Browser capture"}
+        </span>
       </SettingRow>
       <SettingRow title="Name before rendering" desc="Ask for a name each time you press Render.">
         <Switch label="Name before rendering" checked={settings.nameBeforeRender} onChange={(nameBeforeRender) => updateSettings({ nameBeforeRender })} />
@@ -628,7 +677,7 @@ function Export() {
           ? `Downloads each finished video to this device as soon as it renders${folder ? `, into ${folder}` : " (your browser's Downloads folder)"}. Choose a folder to send them somewhere specific. Browsers may ask to allow automatic downloads the first time.`
           : "Downloads each finished video to this device as soon as it renders. Browsers may ask to allow automatic downloads the first time."}
       >
-        <div className="row" style={{ gap: 8 }}>
+        <div className="row export-folder-row">
           <Switch label="Auto-download finished renders" checked={settings.autoDownloadRenders} onChange={(autoDownloadRenders) => updateSettings({ autoDownloadRenders })} />
           {canPickFolder() && (
             <>
@@ -643,14 +692,42 @@ function Export() {
 }
 
 function Data() {
-  const { templates, updateSettings } = useStore();
+  const { templates, updateSettings, toast } = useStore();
   const { clips } = useLibrary();
   const { jobs } = useQueue();
   const [usage, setUsage] = useState<{ used: number; quota: number } | null>(null);
+  const [serverCache, setServerCache] = useState<{ bytes: number; entries: number } | null>(null);
+  const [pruning, setPruning] = useState(false);
   const [confirm, setConfirm] = useState(false);
+
+  const refreshServerCache = useCallback(() => {
+    fetch("/api/cache")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((c) => {
+        if (c && typeof c.bytes === "number") setServerCache({ bytes: c.bytes, entries: c.entries ?? 0 });
+      })
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
     navigator.storage?.estimate?.().then((e) => setUsage({ used: e.usage ?? 0, quota: e.quota ?? 0 }));
-  }, [clips.length, jobs.length]);
+    refreshServerCache();
+  }, [clips.length, jobs.length, refreshServerCache]);
+
+  const pruneServer = async () => {
+    setPruning(true);
+    try {
+      const res = await fetch("/api/cache/prune", { method: "POST" });
+      if (!res.ok) throw new Error(`Prune failed (${res.status})`);
+      const c = await res.json();
+      setServerCache({ bytes: c.bytes ?? 0, entries: c.entries ?? 0 });
+      toast(`Cleared server temp cache (${c.removed ?? 0} entries removed).`, "success");
+    } catch (e) {
+      toast((e as Error).message || "Could not prune server cache.", "error");
+    } finally {
+      setPruning(false);
+    }
+  };
 
   const wipe = async () => {
     await clearBlobs();
@@ -660,17 +737,27 @@ function Data() {
     location.reload();
   };
 
+  const usagePct = usage && usage.quota > 0 ? Math.min(100, (usage.used / usage.quota) * 100) : 0;
+
   return (
     <>
       <div className="set-group card">
-        <SettingRow title="Space used" desc="Clips, imported files and renders are kept in this browser's storage, on this device only.">
+        <SettingRow title="Browser space used" desc="Clips, imported files and renders are kept in this browser's IndexedDB storage on this device.">
           <div className="usage">
             <b className="tabular">{usage ? fmtBytes(usage.used) : "–"}</b>
             {usage && usage.quota > 0 && (
               <span className="usage-bar">
-                <i style={{ width: `${Math.min(100, (usage.used / usage.quota) * 100)}%` }} />
+                <progress value={usagePct} max={100} aria-label="Browser storage used" />
               </span>
             )}
+          </div>
+        </SettingRow>
+        <SettingRow title="Server temp cache" desc="Temporary media, render outputs, and stream remux files cached by the local backend (auto-pruned after 30 min idle).">
+          <div className="row cache-ctl">
+            <span className="muted tabular">{serverCache ? `${fmtBytes(serverCache.bytes)} · ${serverCache.entries} entries` : "–"}</span>
+            <button className="btn ghost sm" onClick={() => void pruneServer()} disabled={pruning || (serverCache?.entries ?? 0) === 0}>
+              {pruning ? <span className="spinner" /> : null} Prune cache
+            </button>
           </div>
         </SettingRow>
         <SettingRow title="Saved" desc="Removed clips still take space until you delete them for good.">

@@ -13,7 +13,7 @@ function directPlayable(url: string): boolean {
   return /\.(m3u8|mp4|webm|mov|mpg|mpeg)(\?|$)/i.test(url);
 }
 
-function platformOf(url: string): ResolvedStream["platform"] {
+export function platformOf(url: string): ResolvedStream["platform"] {
   try {
     const h = new URL(url).hostname.toLowerCase();
     if (h.includes("youtube.com") || h.includes("youtu.be")) return "youtube";

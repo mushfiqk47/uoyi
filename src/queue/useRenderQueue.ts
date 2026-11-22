@@ -24,8 +24,9 @@ interface RenderQueueOptions {
 }
 
 const QUEUE_KEY = "queue:v1";
-/** Keep 2 renders active at a time (e.g. one encoding + one uploading/preparing) to avoid CPU/GPU thrashing. */
-const MAX_CONCURRENT_RENDERS = 2;
+/** One render at a time. Concurrent browser captures fight for the canvas encoder and
+ *  cause stutter/frozen frames, and two server FFmpeg jobs thrash CPU/NVENC as well. */
+const MAX_CONCURRENT_RENDERS = 1;
 
 /** Queue jobs embed a whole Project, so keep them in IndexedDB rather than localStorage. */
 function useQueueStorage(): [QueueJob[], Dispatch<SetStateAction<QueueJob[]>>] {
@@ -155,29 +156,42 @@ export function useRenderQueue({ projectRef, settings, updateClip, toast, showQu
 
       render.done
         .then(async ({ blob, mime }) => {
-          const key = `out:${next.id}`;
-          await putBlob(key, blob);
-          const thumb = await makeVideoThumb(blob);
-          if (thumb) await putBlob(`renderthumb:${next.id}`, thumb);
-          let autoSaved: "download" | "folder" | undefined;
-          if (currentSettings.autoDownloadRenders) {
-            const ext = mime?.includes("mp4") ? "mp4" : "webm";
-            const name = `${safeFileName(next.fileName)}.${ext}`;
-            const saved = await saveRenderToFolder(name, blob);
-            if (saved === "saved") autoSaved = "folder";
-            else {
-              // No folder chosen (or no permission yet): hand it to the system's Downloads folder.
-              downloadBlob(blob, name);
-              autoSaved = "download";
+          let key = "";
+          try {
+            key = `out:${next.id}`;
+            await putBlob(key, blob);
+            // Thumbnail generation is cosmetic — a failure here must not fail the render.
+            const thumb = await makeVideoThumb(blob).catch(() => null);
+            if (thumb) await putBlob(`renderthumb:${next.id}`, thumb).catch(() => {});
+            let autoSaved: "download" | "folder" | undefined;
+            if (currentSettings.autoDownloadRenders) {
+              const ext = mime?.includes("mp4") ? "mp4" : "webm";
+              const name = `${safeFileName(next.fileName)}.${ext}`;
+              const saved = await saveRenderToFolder(name, blob);
+              if (saved === "saved") autoSaved = "folder";
+              else {
+                // No folder chosen (or no permission yet): hand it to the system's Downloads folder.
+                downloadBlob(blob, name);
+                autoSaved = "download";
+              }
             }
+            patchJob(next.id, { status: "done", progress: 1, remaining: 0, finishedAt: Date.now(), outputKey: key, mime, size: blob.size, autoSaved });
+            if (next.project.clipId) updateClip(next.project.clipId, { renderedAt: Date.now() });
+            toast(`Rendered “${next.title}”`, "success", { label: "Show", run: showQueue });
+          } catch (error) {
+            // The render itself succeeded; persisting/saving it failed. Keep the job failed
+            // with a precise reason instead of losing the finished video silently.
+            patchJob(next.id, { status: "failed", failure: `Rendered, but saving it failed: ${(error as Error)?.message ?? "unknown error"}`, finishedAt: Date.now() });
+            toast(`Rendered “${next.title}”, but saving it failed`, "error");
           }
-          patchJob(next.id, { status: "done", progress: 1, remaining: 0, finishedAt: Date.now(), outputKey: key, mime, size: blob.size, autoSaved });
-          if (next.project.clipId) updateClip(next.project.clipId, { renderedAt: Date.now() });
-          toast(`Rendered “${next.title}”`, "success", { label: "Show", run: showQueue });
         })
         .catch((error: Error) => {
-          if (error instanceof RenderCancelled) patchJob(next.id, { status: "cancelled", finishedAt: Date.now() });
-          else patchJob(next.id, { status: "failed", failure: error.message, finishedAt: Date.now() });
+          if (error instanceof RenderCancelled) {
+            patchJob(next.id, { status: "cancelled", finishedAt: Date.now() });
+          } else {
+            patchJob(next.id, { status: "failed", failure: error.message, finishedAt: Date.now() });
+            toast(`Render failed: ${error.message}`, "error");
+          }
         })
         .finally(() => {
           handles.current.delete(next.id);
@@ -191,6 +205,7 @@ export function useRenderQueue({ projectRef, settings, updateClip, toast, showQu
       setQueuePaused(paused);
       for (const [id, h] of handles.current) {
         if (paused) {
+          if (!h.canPause()) continue;
           h.pause();
           patchJob(id, { status: "paused" });
         } else {

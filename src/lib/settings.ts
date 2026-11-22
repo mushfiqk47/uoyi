@@ -41,7 +41,7 @@ export interface Settings {
   phone: PhoneStyle;
   defaultTemplateId: string | null;
   exportHeight: 720 | 1080;
-  exportFps: 30 | 60 | 90 | 120;
+  exportFps: number;
   exportFormat: "webm" | "mp4";
   /** Save each finished render straight to a folder picked once in Settings → Rendering. */
   autoDownloadRenders: boolean;
@@ -63,10 +63,11 @@ export interface Settings {
   aiGemini: AiProfile;
   /** OpenAI or any other OpenAI-compatible chat endpoint. */
   aiOpenAi: AiProfile;
-  /** Preconfigured Kilo Gateway route (OpenAI-compatible tunnel, free auto model). */
+  /** Preconfigured 9Router route (OpenAI-compatible tunnel, free auto model). */
   aiKilo: AiProfile;
   nemoSpeechUrl: string;
-  captionModel: "parakeet-tdt" | "parakeet-ctc" | "nemotron-en" | "nemotron-3.5";
+  /** Catalog id of the local caption model (audio.cpp GGUF or nemo-speech entry). */
+  captionModel: string;
   autoCaptionOnClip: boolean;
   aiClipPrompt: string;
   aiAutoClip: boolean;
@@ -108,7 +109,7 @@ export const DEFAULT_SETTINGS: Settings = {
   rollingBuffer: true,
   captureSeconds: 30,
   autoRecord: false,
-  recordSaveSeconds: 900,
+  recordSaveSeconds: 300,
   recordQuality: "fullhd",
   afterClip: "stay",
   defaultLayout: "split",
@@ -130,12 +131,12 @@ export const DEFAULT_SETTINGS: Settings = {
   aiCloud: { baseUrl: "", apiKey: "", model: "mimo-v2.6-heretic" },
   aiGemini: { baseUrl: "", apiKey: "", model: "gemini-4-hydrogen" },
   aiOpenAi: { baseUrl: "https://api.openai.com/v1", apiKey: "", model: "gpt-4o-mini" },
-  aiKilo: { baseUrl: "https://rjvi38q.abc-tunnel.us/v1", apiKey: "", model: "kc/kilo-auto/free" },
+  aiKilo: { baseUrl: "", apiKey: "", model: "kc/kilo-auto/free" },
   nemoSpeechUrl: "",
   captionModel: "parakeet-tdt",
   autoCaptionOnClip: true,
   aiClipPrompt:
-    "You are an expert viral short-form gaming & livestream editor (TikTok, YouTube Shorts, Instagram Reels). Given timestamped audio/visual logs or stream context, find the highest-retention viral moments (15-60s). Prioritize instant first-3-second visual/audio hooks, intense gameplay (GTA 6 police chases, Vice City reveals, insane stunts, crashes, easter eggs, clutch plays), genuine streamer screams/laughs/rage, and shareable payoffs. Give every clip a punchy title, a 3-second on-screen text hook, viral score breakdown, platform fit, editing tips, and social caption + hashtags.",
+    "You are an expert viral short-form video & livestream editor (TikTok, YouTube Shorts, Instagram Reels). Given timestamped audio/visual logs or stream context, find the highest-retention viral moments (15-60s). Prioritize instant first-3-second visual/audio hooks, intense action or clutch plays, genuine creator reactions (laughter, shock, hype, frustration), surprising reveals, and clear payoffs. Give every clip a punchy title, a 3-second on-screen text hook, viral score breakdown, platform fit, editing tips, and social caption + hashtags.",
   aiAutoClip: false,
   aiClipInterval: 3,
   aiClipThreshold: 7,
@@ -193,12 +194,16 @@ export function loadSettings(): Settings {
     if (fingerprint(loaded.aiCloud.model) === "250965c3" || fingerprint(loaded.aiCloud.model) === "78d13152") loaded.aiCloud.model = "mimo-v2.6-heretic";
     if (fingerprint(loaded.nemoSpeechUrl) === "335dbffd") loaded.nemoSpeechUrl = "";
   });
+  if (loaded.aiKilo?.baseUrl && loaded.aiKilo.baseUrl.includes("rjvi38q.abc-tunnel.us")) {
+    loaded.aiKilo = { ...loaded.aiKilo, baseUrl: "" };
+  }
   delete (loaded as Partial<LegacyAiFields>).aiBaseUrl;
   delete (loaded as Partial<LegacyAiFields>).aiApiKey;
   delete (loaded as Partial<LegacyAiFields>).aiModel;
   once(MIGRATIONS.fps, () => {
-    if (loaded.exportFps === 30) loaded.exportFps = 60;
+    if (loaded.exportFps < 60) loaded.exportFps = 60;
   });
+  loaded.exportFps = Math.max(60, Math.round(Number(loaded.exportFps) || 60));
   // The check interval used to be seconds (10/20/30/60); it is now minutes (3–15).
   once(MIGRATIONS.aiInterval, () => {
     if (loaded.aiClipInterval <= 60) loaded.aiClipInterval = 3;
@@ -210,15 +215,12 @@ export function loadSettings(): Settings {
     if (typeof legacy === "number" && legacy > 0) loaded.recordSaveSeconds = Math.round(legacy * 60);
   });
   delete (loaded as Partial<Record<"recordSaveMinutes", unknown>>).recordSaveMinutes;
-  loaded.recordSaveSeconds = Math.min(14400, Math.max(30, Math.round(Number(loaded.recordSaveSeconds) || 900)));
+  loaded.recordSaveSeconds = Math.min(7200, Math.max(30, Math.round(Number(loaded.recordSaveSeconds) || 300)));
   if (loaded.recordQuality !== "smooth" && loaded.recordQuality !== "fullhd") loaded.recordQuality = "fullhd";
   // Default layout shifted to Facecam + game (split) for streamer/gaming clips.
   once(MIGRATIONS.defaultLayoutSplit, () => {
     if (loaded.defaultLayout === "fill") loaded.defaultLayout = "split";
   });
-  if (loaded.exportFps !== 30 && loaded.exportFps !== 60 && loaded.exportFps !== 90 && loaded.exportFps !== 120) {
-    loaded.exportFps = 60;
-  }
   // Render filenames dropped the date; only the shipped default is rewritten, custom patterns stay.
   if (loaded.fileNamePattern === "{title} {date}") loaded.fileNamePattern = "{title}";
   return loaded;
@@ -245,7 +247,7 @@ function mix(hex: string, toward: string, amount: number): string {
   return rgbToHex(a.map((v, i) => v + (b[i] - v) * amount));
 }
 
-function luminance(hex: string): number {
+export function luminance(hex: string): number {
   const [r, g, b] = hexToRgb(hex).map((v) => {
     const c = v / 255;
     return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
@@ -253,11 +255,11 @@ function luminance(hex: string): number {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
-function inkOn(hex: string): string {
+export function inkOn(hex: string): string {
   return luminance(hex) > 0.179 ? "#101010" : "#ffffff";
 }
 
-function themeVariables(accent: string, background: string | null): Record<string, string> {
+export function themeVariables(accent: string, background: string | null): Record<string, string> {
   const [r, g, b] = hexToRgb(accent);
   const vars: Record<string, string> = {
     "--brand": accent,

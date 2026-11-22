@@ -18,11 +18,6 @@ function Shell() {
   useEffect(() => {
     if (!settings.setupDone) setHelp(true);
   }, [settings.setupDone]);
-  // The first-run overlay must never sit on top of another screen (it dims everything
-  // and blocks clicks there). It belongs to the Viewer only.
-  useEffect(() => {
-    if (screen !== "viewer") setHelp(false);
-  }, [screen]);
   return (
     <div className="app">
       <TopBar onHelp={() => setHelp(true)} />
@@ -42,7 +37,7 @@ function Shell() {
         </Suspense>
       </ErrorBoundary>
       <Toasts />
-      {help && screen === "viewer" && <Onboarding onClose={() => setHelp(false)} />}
+      {help && <Onboarding onClose={() => setHelp(false)} />}
     </div>
   );
 }

@@ -2,6 +2,9 @@ node_modules/
 dist/
 build/
 .cache/
+/transcript/
+models/**/*.gguf
+models/*.gguf
 .env*
 .vite/
 vite.config.*.timestamp-*

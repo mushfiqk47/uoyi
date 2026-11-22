@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Clapperboard, Disc, Play, RotateCcw, Sparkles, Trash2, X } from "lucide-react";
-import { useLibrary, useShellStore, useStore, useToastStore } from "../store";
+import { useLibrary, useStore } from "../store";
 import type { Clip } from "../lib/types";
 import { fmtTime, fmtWhen } from "../lib/util";
 import { getBlob } from "../lib/db";
@@ -21,20 +21,11 @@ export function Recommend() {
   const [findClip, setFindClip] = useState<Clip | null>(null);
   const [confirmOne, setConfirmOne] = useState<Clip | null>(null);
   const [confirmAll, setConfirmAll] = useState(false);
-  const [deleting, setDeleting] = useState(false);
 
-  // Compute all recordings, removed count, and filtered+sorted view cleanly with memoization.
-  const { allRecordings, removedCount } = useMemo(() => {
-    const list: Clip[] = [];
-    let removed = 0;
-    for (const c of clips) {
-      if (!c.recording) continue;
-      list.push(c);
-      if (c.removedAt) removed += 1;
-    }
-    return { allRecordings: list, removedCount: removed };
-  }, [clips]);
-
+  // This gallery is for continuous stream recordings only. Clips made in the Viewer,
+  // found by AI or imported in Clips live in the Clips tab.
+  const allRecordings = useMemo(() => clips.filter((c) => c.recording), [clips]);
+  const removedCount = allRecordings.filter((c) => c.removedAt).length;
   const recordings = useMemo(
     () =>
       allRecordings
@@ -160,28 +151,19 @@ export function Recommend() {
         <Modal
           title="Delete this recording for good?"
           description="Its video is erased from this device. This can't be undone."
-          onClose={() => { if (!deleting) setConfirmOne(null); }}
+          onClose={() => setConfirmOne(null)}
           footer={
             <>
-              <button className="btn ghost" onClick={() => setConfirmOne(null)} disabled={deleting}>
+              <button className="btn ghost" onClick={() => setConfirmOne(null)}>
                 Keep it
               </button>
               <button
                 className="btn danger"
-                disabled={deleting}
                 onClick={() => {
-                  void (async () => {
-                    setDeleting(true);
-                    try {
-                      await deleteClip(confirmOne.id);
-                      setConfirmOne(null);
-                    } finally {
-                      setDeleting(false);
-                    }
-                  })();
+                  void deleteClip(confirmOne.id);
+                  setConfirmOne(null);
                 }}
               >
-                {deleting ? <span className="spinner" /> : null}
                 Delete
               </button>
             </>
@@ -193,30 +175,24 @@ export function Recommend() {
         <Modal
           title={`Delete all ${removedCount} removed recordings?`}
           description="Their videos and thumbnails are erased from this device. This can't be undone."
-          onClose={() => { if (!deleting) setConfirmAll(false); }}
+          onClose={() => setConfirmAll(false)}
           footer={
             <>
-              <button className="btn ghost" onClick={() => setConfirmAll(false)} disabled={deleting}>
+              <button className="btn ghost" onClick={() => setConfirmAll(false)}>
                 Cancel
               </button>
               <button
                 className="btn danger"
-                disabled={deleting}
                 onClick={() => {
                   void (async () => {
-                    setDeleting(true);
-                    try {
-                      const ids = allRecordings.filter((c) => c.removedAt).map((c) => c.id);
-                      await deleteClips(ids);
-                      toast(`Deleted ${ids.length} recording${ids.length === 1 ? "" : "s"}`, "success");
-                      setConfirmAll(false);
-                    } finally {
-                      setDeleting(false);
-                    }
+                    const ids = allRecordings.filter((c) => c.removedAt).map((c) => c.id);
+                    await deleteClips(ids);
+                    toast(`Deleted ${ids.length} recording${ids.length === 1 ? "" : "s"}`, "success");
+                    setConfirmAll(false);
                   })();
                 }}
               >
-                {deleting ? <span className="spinner" /> : <Trash2 className="ic" />} Delete all
+                <Trash2 className="ic" /> Delete all
               </button>
             </>
           }
@@ -229,8 +205,7 @@ export function Recommend() {
 /** Runs the AI Clip Finder on a saved recording. Auto mode lets the AI pick the count and
  *  lengths; saved clips go to Clips, never back into the recording gallery. */
 function FindRecordClipsModal({ clip, onClose }: { clip: Clip; onClose: () => void }) {
-  const { settings, go } = useShellStore();
-  const { toast } = useToastStore();
+  const { settings, toast, go } = useStore();
   const { addClip, autoCaptionClip } = useLibrary();
   const [finder, setFinder] = useState<ClipFinderValues>(RECORDING_CLIP_FINDER);
   const [status, setStatus] = useState("");
@@ -274,6 +249,7 @@ function FindRecordClipsModal({ clip, onClose }: { clip: Clip; onClose: () => vo
       width={620}
       footer={
         <>
+          {status && <span className="clip-finder-status" role="status" aria-live="polite">{status}</span>}
           <button className="btn ghost" onClick={onClose} disabled={busy}>Cancel</button>
           <button className="btn accent" onClick={() => void run()} disabled={busy}>
             {busy ? <span className="spinner" /> : <Sparkles className="ic" />}
@@ -283,7 +259,6 @@ function FindRecordClipsModal({ clip, onClose }: { clip: Clip; onClose: () => vo
       }
     >
       <ClipFinderFields value={finder} onChange={setFinder} disabled={busy} limits={RECORDING_CLIP_LIMITS} />
-      {status && <p className="clip-finder-status" role="status" aria-live="polite">{status}</p>}
     </Modal>
   );
 }

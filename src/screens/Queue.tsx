@@ -1,39 +1,28 @@
-import { memo, useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { ArrowDown, ArrowUp, CircleAlert, Download, ListVideo, Pause, Play, RotateCcw, Trash2, X, CheckCircle2, Clock } from "lucide-react";
-import { useQueue, useShellStore, useToastStore } from "../store";
+import { useQueue, useStore } from "../store";
 import type { QueueJob } from "../lib/types";
-import { blobUrl, getBlob } from "../lib/db";
+import { acquireBlobUrl, getBlob } from "../lib/db";
 import { downloadBlob, fmtBytes, fmtDuration, fmtTime, fmtWhen, safeFileName } from "../lib/util";
 import { Modal } from "../components/ui";
 
-const isActiveStatus = (s: QueueJob["status"]) => s === "queued" || s === "rendering" || s === "paused";
-
 export function Queue() {
-  const { go } = useShellStore();
+  const { go } = useStore();
   const { jobs, queuePaused, setQueuePaused, removeJob } = useQueue();
-  const { waiting, finished } = useMemo(() => {
-    const upNext: QueueJob[] = [];
-    const doneOrFailed: QueueJob[] = [];
-    for (const j of jobs) {
-      if (isActiveStatus(j.status)) upNext.push(j);
-      else doneOrFailed.push(j);
-    }
-    doneOrFailed.sort((a, b) => (b.finishedAt ?? 0) - (a.finishedAt ?? 0));
-    return { waiting: upNext, finished: doneOrFailed };
-  }, [jobs]);
-
-  const hasFailed = useMemo(() => finished.some((j) => j.status !== "done"), [finished]);
+  const active = (s: QueueJob["status"]) => s === "queued" || s === "rendering" || s === "paused";
+  const waiting = jobs.filter((j) => active(j.status));
+  const finished = jobs.filter((j) => !active(j.status)).sort((a, b) => (b.finishedAt ?? 0) - (a.finishedAt ?? 0));
 
   return (
     <main className="page queue">
       <div className="pagehead">
         <div>
           <h1>Queue</h1>
-          <p>Renders run up to 2 at once using fast FFmpeg encoding when available, or in-browser fallback.</p>
+          <p>Renders run one at a time using fast FFmpeg encoding when available, or in-browser fallback.</p>
         </div>
         <div className="row">
           {finished.length > 0 && (
-            <button className="btn ghost sm" onClick={() => finished.filter((j) => j.status !== "done").forEach((j) => removeJob(j.id))} disabled={!hasFailed}>
+            <button className="btn ghost sm" onClick={() => finished.filter((j) => j.status !== "done").forEach((j) => removeJob(j.id))} disabled={!finished.some((j) => j.status !== "done")}>
               Clear failed
             </button>
           )}
@@ -89,39 +78,51 @@ export function Queue() {
   );
 }
 
-const JobCard = memo(function JobCard({ job, first, last }: { job: QueueJob; first?: boolean; last?: boolean }) {
-  const { toast } = useToastStore();
+function JobCard({ job, first, last }: { job: QueueJob; first?: boolean; last?: boolean }) {
+  const { toast } = useStore();
   const { cancelJob, retryJob, moveJob, removeJob, markDownloaded, queuePaused } = useQueue();
   const [watch, setWatch] = useState(false);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [poster, setPoster] = useState<string | null>(null);
-  const [downloading, setDownloading] = useState(false);
   const ext = job.mime?.includes("mp4") ? "mp4" : "webm";
   const running = job.status === "rendering" || job.status === "paused";
 
   useEffect(() => {
     let alive = true;
+    const releases: Array<() => void> = [];
     if (job.status === "done" && job.outputKey) {
-      void blobUrl(job.outputKey).then((u) => alive && setVideoUrl(u));
-      void blobUrl(`renderthumb:${job.id}`).then((u) => alive && setPoster(u));
+      void acquireBlobUrl(job.outputKey).then((entry) => {
+        if (!entry) return;
+        if (!alive) entry.release();
+        else {
+          releases.push(entry.release);
+          setVideoUrl(entry.url);
+        }
+      });
+      void acquireBlobUrl(`renderthumb:${job.id}`).then((entry) => {
+        if (!entry) return;
+        if (!alive) entry.release();
+        else {
+          releases.push(entry.release);
+          setPoster(entry.url);
+        }
+      });
     } else {
       setVideoUrl(null);
       setPoster(null);
     }
-    return () => { alive = false; };
+    return () => {
+      alive = false;
+      for (const fn of releases) fn();
+    };
   }, [job.status, job.outputKey, job.id]);
 
   const download = async () => {
-    if (!job.outputKey || downloading) return;
-    setDownloading(true);
-    try {
-      const b = await getBlob(job.outputKey);
-      if (!b) return toast("This render's file is missing.", "error");
-      downloadBlob(b, `${safeFileName(job.fileName)}.${ext}`);
-      markDownloaded(job.id);
-    } finally {
-      setDownloading(false);
-    }
+    if (!job.outputKey) return;
+    const b = await getBlob(job.outputKey);
+    if (!b) return toast("This render's file is missing.", "error");
+    downloadBlob(b, `${safeFileName(job.fileName)}.${ext}`);
+    markDownloaded(job.id);
   };
 
   return (
@@ -163,7 +164,10 @@ const JobCard = memo(function JobCard({ job, first, last }: { job: QueueJob; fir
           <b>{job.title}</b>
           <small className="muted">
             {job.status === "queued" && (queuePaused ? "Paused · waiting" : `Waiting · ${fmtTime(job.duration)} long`)}
-            {job.status === "rendering" && `Rendering${job.fps > 0 ? ` · ${job.fps} fps` : ""} · ${fmtDuration(job.remaining)} left`}
+            {job.status === "rendering" &&
+              (queuePaused
+                ? `Rendering · ${job.fps} fps · queue paused after this`
+                : `Rendering · ${job.fps} fps · ${fmtDuration(job.remaining)} left`)}
             {job.status === "paused" && `Paused at ${Math.floor(job.progress * 100)}%`}
             {job.status === "done" && `${fmtWhen(job.finishedAt ?? Date.now())} · ${fmtTime(job.duration)} · ${fmtBytes(job.size)} · ${ext.toUpperCase()}${job.autoSaved ? ` · ${job.autoSaved === "folder" ? "Saved to folder" : "Downloaded"}` : ""}`}
             {job.status === "failed" && (job.failure ?? "Failed")}
@@ -196,8 +200,8 @@ const JobCard = memo(function JobCard({ job, first, last }: { job: QueueJob; fir
               <button className="btn ghost sm" onClick={() => setWatch(true)}>
                 <Play className="ic" /> Watch
               </button>
-              <button className="btn accent sm" onClick={() => void download()} disabled={downloading}>
-                {downloading ? <span className="spinner" /> : <Download className="ic" />} Download
+              <button className="btn accent sm" onClick={download}>
+                <Download className="ic" /> Download
               </button>
             </>
           )}
@@ -209,49 +213,38 @@ const JobCard = memo(function JobCard({ job, first, last }: { job: QueueJob; fir
         </div>
       </div>
       {running && (
-        <div className="render-bar" role="progressbar" aria-valuenow={Math.round(job.progress * 100)} aria-valuemin={0} aria-valuemax={100}>
-          <i style={{ width: `${job.progress * 100}%` }} />
+        <div className="render-bar">
+          <progress value={Math.round(job.progress * 100)} max={100} aria-label={`Render progress for ${job.title}`} />
         </div>
       )}
       {watch && job.outputKey && <RenderPlayer job={job} onClose={() => setWatch(false)} />}
     </article>
   );
-});
+}
 
 function RenderPlayer({ job, onClose }: { job: QueueJob; onClose: () => void }) {
   const [url, setUrl] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
   useEffect(() => {
     let alive = true;
-    setLoading(true);
-    setUrl(null);
-    if (!job.outputKey) {
-      setLoading(false);
-      return;
-    }
-    void blobUrl(job.outputKey)
-      .then((u) => {
-        if (alive) setUrl(u);
-      })
-      .finally(() => {
-        if (alive) setLoading(false);
+    let release = () => {};
+    if (job.outputKey) {
+      void acquireBlobUrl(job.outputKey).then((entry) => {
+        if (!entry) return;
+        if (!alive) entry.release();
+        else {
+          release = entry.release;
+          setUrl(entry.url);
+        }
       });
-    return () => { alive = false; };
+    }
+    return () => {
+      alive = false;
+      release();
+    };
   }, [job.outputKey]);
-
   return (
     <Modal title={job.title} onClose={onClose} width={420}>
-      {loading ? (
-        <div className="render-player-state" role="status" aria-label="Loading render">
-          <span className="spinner" />
-        </div>
-      ) : url ? (
-        <video className="render-player" src={url} controls autoPlay playsInline />
-      ) : (
-        <div className="render-player-state">
-          <p className="muted">This render's file is no longer available on this device.</p>
-        </div>
-      )}
+      {url ? <video className="render-player" src={url} controls autoPlay playsInline /> : <span className="spinner" />}
     </Modal>
   );
 }

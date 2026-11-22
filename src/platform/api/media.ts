@@ -33,6 +33,8 @@ export interface AnalyzeResult {
   duration?: number;
   width?: number;
   height?: number;
+  peaks?: Array<{ time: number; score: number }>;
+  silences?: Array<{ start: number; end: number; duration: number }>;
 }
 
 export function analyzeMedia(id: string): Promise<AnalyzeResult> {

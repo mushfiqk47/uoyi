@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const { Readable } = require("node:stream");
 const { pipeline } = require("node:stream/promises");
-const { run, resolveYtDlp, friendlyYtDlpError, probe } = require("../lib/proc.cjs");
+const { run, hasTool, probe } = require("../lib/proc.cjs");
 const { ensureCache, mediaFile } = require("../lib/files.cjs");
 const { id } = require("../lib/id.cjs");
 const { mediaJobs } = require("../state.cjs");
@@ -12,16 +12,7 @@ const { mediaJobs } = require("../state.cjs");
 function pickPlayable(info) {
   const formats = (info.formats || []).filter((f) => f.url && f.vcodec && f.vcodec !== "none");
   const withHeight = formats.filter((f) => f.height);
-  const hasAudio = (f) => (f.acodec && f.acodec !== "none") || /m3u8/i.test(f.protocol || f.url || "");
-  withHeight.sort((a, b) => {
-    const hd = (b.height || 0) - (a.height || 0);
-    if (hd !== 0) return hd;
-    const ad = Number(hasAudio(b)) - Number(hasAudio(a));
-    if (ad !== 0) return ad;
-    const fd = (b.fps || 0) - (a.fps || 0);
-    if (fd !== 0) return fd;
-    return (b.tbr || b.vbr || 0) - (a.tbr || a.vbr || 0);
-  });
+  withHeight.sort((a, b) => (b.height || 0) - (a.height || 0));
   const chosen = withHeight.find((f) => (f.height || 0) <= 1080) || withHeight[0];
   return chosen || formats[formats.length - 1] || null;
 }
@@ -68,7 +59,8 @@ async function downloadDirectMedia(url, file, job) {
 async function startPrepare(url, title) {
   const mediaId = id();
   const file = mediaFile(mediaId);
-  const job = { id: mediaId, status: "preparing", file, err: "", title: title || url, url };
+  const now = Date.now();
+  const job = { id: mediaId, status: "preparing", file, mime: "video/mp4", err: "", title: title || url, url, createdAt: now, accessedAt: now };
   mediaJobs.set(mediaId, job);
   await ensureCache();
 
@@ -81,25 +73,25 @@ async function startPrepare(url, title) {
     return job;
   }
 
-  const ytDlp = await resolveYtDlp();
-  if (!ytDlp) {
+  const ytDlpAvailable = await hasTool("yt-dlp", ["--version"]);
+  if (!ytDlpAvailable) {
     job.status = "failed";
-    job.err = "yt-dlp is not available in this cloud environment. Upload the video file (MP4/WebM/MOV), paste a direct .mp4/.webm URL, or use Capture Tab in the Viewer.";
+    job.err = "yt-dlp is not installed in this cloud environment. Upload the video file (MP4/WebM/MOV), paste a direct .mp4/.webm URL, or use Capture Tab in the Viewer.";
     return job;
   }
 
   const args = [
     "--no-playlist",
-    "-f", "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080]/bv*+ba/b",
+    "-f", "bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[height<=720]/bv*+ba/b",
     "--merge-output-format", "mp4",
     "-o", file,
     url,
   ];
-  run(ytDlp, args, { timeout: 0 })
+  run("yt-dlp", args, { timeout: 0 })
     .then((r) => {
       if (r.code !== 0 || !fs.existsSync(file)) {
         job.status = "failed";
-        job.err = friendlyYtDlpError(r.stderr, "yt-dlp failed");
+        job.err = (r.stderr || "yt-dlp failed").split("\n").filter(Boolean).slice(-2).join(" ");
         return;
       }
       job.status = "ready";

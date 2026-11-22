@@ -1,0 +1,14 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "overused-font",
+        "value": "inter",
+        "createdAt": "2026-11-18T08:02:46.322Z",
+        "reason": "Clipweave DESIGN.md explicitly declares self-hosted Inter Variable as the body face for dense operational text."
+      }
+    ]
+  }
+}

@@ -3,7 +3,6 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { pickPlayable } = require("./media.cjs");
-const { friendlyYtDlpError } = require("../lib/proc.cjs");
 
 test("pickPlayable prefers the highest rendition at or below 1080p", () => {
   const info = {
@@ -25,22 +24,4 @@ test("pickPlayable falls back to the highest video and then the last format", ()
   assert.equal(pickPlayable(unlabelled).url, "two");
 
   assert.equal(pickPlayable({ formats: [] }), null);
-});
-
-test("pickPlayable prefers audio-bearing 1080p60 streams when multiple 1080p formats exist", () => {
-  const info = {
-    formats: [
-      { url: "silent-1080", vcodec: "avc1", acodec: "none", height: 1080, fps: 60 },
-      { url: "audio-1080-30", vcodec: "avc1", acodec: "mp4a", height: 1080, fps: 30 },
-      { url: "audio-1080-60", vcodec: "avc1", acodec: "mp4a", height: 1080, fps: 60 },
-    ],
-  };
-  assert.equal(pickPlayable(info).url, "audio-1080-60");
-});
-
-test("friendlyYtDlpError maps YouTube bot-check errors to Capture Tab guidance", () => {
-  const botErr = "ERROR: [youtube] abc: Sign in to confirm you’re not a bot. Use --cookies-from-browser";
-  assert.match(friendlyYtDlpError(botErr), /Capture Tab/i);
-  assert.equal(friendlyYtDlpError("ERROR: Offline channel\n", "fallback"), "ERROR: Offline channel");
-  assert.equal(friendlyYtDlpError("", "fallback"), "fallback");
 });

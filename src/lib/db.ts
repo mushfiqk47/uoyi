@@ -103,25 +103,26 @@ export async function deleteStaleRecordingChunks(maxAgeMs: number): Promise<numb
 }
 
 const urls = new Map<string, Promise<string | null>>();
-const MAX_LIVE_URLS = 12;
+const pinCounts = new Map<string, number>();
+const MAX_LIVE_URLS = 64;
 
-/** An object URL for a stored blob, cached per key but bounded so a long session can't pin
- *  dozens of large MP4s in memory. Deleting a blob revokes its URL via `deleteBlob`. */
+function evictUnpinnedUrls(): void {
+  if (urls.size <= MAX_LIVE_URLS) return;
+  for (const key of Array.from(urls.keys())) {
+    if (urls.size <= MAX_LIVE_URLS) break;
+    if ((pinCounts.get(key) ?? 0) > 0) continue;
+    forgetUrl(key);
+  }
+}
+
+/** An object URL for a stored blob, cached per key with unpinned LRU eviction so active
+ *  players/modals cannot have their URLs revoked while mounted. */
 export function blobUrl(key: string): Promise<string | null> {
   let p = urls.get(key);
   if (!p) {
-    p = getBlob(key)
-      .then((b) => (b ? URL.createObjectURL(b) : null))
-      .catch((err) => {
-        urls.delete(key);
-        throw err;
-      });
+    p = getBlob(key).then((b) => (b ? URL.createObjectURL(b) : null));
     urls.set(key, p);
-    while (urls.size > MAX_LIVE_URLS) {
-      const oldest = urls.keys().next().value as string | undefined;
-      if (oldest === undefined) break;
-      forgetUrl(oldest);
-    }
+    evictUnpinnedUrls();
   } else {
     // Re-insert to mark the key as recently used (Map iterates in insertion order).
     urls.delete(key);
@@ -130,8 +131,34 @@ export function blobUrl(key: string): Promise<string | null> {
   return p;
 }
 
+/** Pins a blob URL against LRU eviction until the returned `release()` handle is called. */
+export async function acquireBlobUrl(key: string): Promise<{ url: string | null; release: () => void }> {
+  pinCounts.set(key, (pinCounts.get(key) ?? 0) + 1);
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    const next = (pinCounts.get(key) ?? 1) - 1;
+    if (next <= 0) {
+      pinCounts.delete(key);
+      evictUnpinnedUrls();
+    } else {
+      pinCounts.set(key, next);
+    }
+  };
+  try {
+    const url = await blobUrl(key);
+    if (!url) release();
+    return { url, release };
+  } catch (e) {
+    release();
+    throw e;
+  }
+}
+
 export function forgetUrl(key: string): void {
   const p = urls.get(key);
   urls.delete(key);
+  pinCounts.delete(key);
   p?.then((u) => u && URL.revokeObjectURL(u));
 }

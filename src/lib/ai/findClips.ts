@@ -4,7 +4,9 @@ import { putBlob } from "../db";
 import { saveThumb } from "../thumbs";
 import { uid } from "../util";
 import { suggestClipsFromTranscript } from "./openai";
+import { dedupeOverlappingPicks, sceneStartsForPrompt, snapPicksToSignals, type SceneSpanLike } from "./scenes";
 import { analyzeMedia, cutClip, fetchClipBlob, mediaStatus } from "../../platform/api/media";
+import { cancelSceneDetect, sceneDetectStatus, startSceneDetect } from "../../platform/api/scenedetect";
 
 export interface PreparedMedia {
   id: string;
@@ -22,6 +24,8 @@ export interface FindClipsOptions {
   autoLength?: boolean;
   /** Crop every cut to a vertical 9:16 frame. */
   vertical?: boolean;
+  /** Detect visual scene changes (PySceneDetect) and use them as cut boundaries + AI candidates. */
+  sceneDetect?: boolean;
 }
 
 export type ClipPick = {
@@ -48,6 +52,19 @@ export interface FindClipsParams {
   autoCaptionClip?: (id: string, blob: Blob) => Promise<void>;
 }
 
+/** Polls a scene-detection job until it finishes. Any failure degrades to no scenes — the
+ *  finder still works purely from the transcript, PySceneDetect is an enhancement, not a gate. */
+async function waitForScenes(jobId: string): Promise<SceneSpanLike[]> {
+  for (let i = 0; i < 900; i++) {
+    const s = await sceneDetectStatus(jobId).catch(() => null);
+    if (!s || s.status === "failed" || s.status === "unknown") return [];
+    if (s.status === "done") return s.scenes ?? [];
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  void cancelSceneDetect(jobId).catch(() => {});
+  return [];
+}
+
 /** Runs the AI Clip Finder pipeline on media the local API already has (an upload or a
  *  prepared link). Both the Clips screen and the per-recording action use this same path. */
 export async function findClipsInMedia(params: FindClipsParams): Promise<number> {
@@ -65,15 +82,31 @@ export async function findClipsInMedia(params: FindClipsParams): Promise<number>
   if (!prepared) throw new Error("Preparing that video timed out. Check the local server log, then try again.");
 
   report("Analyzing audio & visual frames with AI…");
-  const a = await analyzeMedia(media.id);
+  // Scene detection runs while the audio analysis runs, so opting in adds no wall time on the
+  // common path; both steps read the same file and neither blocks the other.
+  const sceneJob = options.sceneDetect ? await startSceneDetect(media.id).catch(() => null) : null;
+  const [a, sceneSpans] = await Promise.all([
+    analyzeMedia(media.id),
+    sceneJob ? waitForScenes(sceneJob.id) : Promise.resolve<SceneSpanLike[]>([]),
+  ]);
+  if (sceneSpans.length) report(`Found ${sceneSpans.length} scene changes — using them as cut boundaries.`);
 
   report("Scoring viral moments & generating hooks…");
   const rawPicks = await suggestClipsFromTranscript(
     settings,
-    { title: media.title, transcript: a.transcript || "", duration: a.duration || 0 },
+    {
+      title: media.title,
+      transcript: a.transcript || "",
+      duration: a.duration || 0,
+      ...(sceneSpans.length ? { sceneStarts: sceneStartsForPrompt(sceneSpans) } : {}),
+    },
     { maxClips: options.maxClips, minLength: options.minLength, maxLength: options.maxLength, focus: options.focus, autoCount: options.autoCount, autoLength: options.autoLength },
   );
-  let picks = selectClipPicks(rawPicks, options.minScore, options.maxClips);
+  let picks = selectClipPicks(
+    dedupeOverlappingPicks(snapPicksToSignals(rawPicks, sceneSpans, a.silences ?? []), 0.35),
+    options.minScore,
+    options.maxClips,
+  );
   if (!picks.length) {
     const dur = Number(a.duration) || 0;
     if (!rawPicks.length && dur > 0.5 && dur <= 180) {

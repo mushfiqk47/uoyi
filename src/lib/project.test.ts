@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activeClipAt, clipLength, clipStarts, fileNameFor, hookTextItem, hookTileText, postCopyText, projectDuration, withoutVideoClip } from "./project";
+import { activeClipAt, clipLength, clipStarts, fileNameFor, hookTextItem, hookTileText, postCopyText, projectDuration, splitVideoClipAt, withoutVideoClip } from "./project";
 import type { Clip, Project, VClip } from "./types";
 
 const clip = (id: string, inde: number, out: number, speed = 1): VClip => ({
@@ -141,6 +141,45 @@ describe("withoutVideoClip", () => {
   it("ignores an unknown clip id", () => {
     const p = withAudio();
     expect(withoutVideoClip(p, "nope")).toBe(p);
+  });
+});
+
+describe("splitVideoClipAt", () => {
+  it("splits both video and mirrored auto audio at timeline time respecting speed", () => {
+    const p = proj([clip("a", 2, 12, 2)]);
+    p.music = [
+      { id: "auto-a", mediaId: "m", start: 0, in: 2, out: 12, volume: 1, auto: true },
+      { id: "bg", mediaId: "other", start: 0, in: 0, out: 10, volume: 0.4 },
+    ];
+    let n = 0;
+    const res = splitVideoClipAt(p, 2, (prefix) => `${prefix}${++n}`);
+    expect(res).not.toBeNull();
+    expect(res!.selectedId).toBe("v1");
+    expect(res!.project.video.map((v) => [v.id, v.in, v.out])).toEqual([
+      ["a", 2, 6],
+      ["v1", 6, 12],
+    ]);
+    expect(res!.project.music.map((m) => [m.id, m.start, m.in, m.out])).toEqual([
+      ["auto-a", 0, 2, 6],
+      ["a2", 2, 6, 12],
+      ["bg", 0, 0, 10],
+    ]);
+  });
+
+  it("refuses to split too close to clip edges", () => {
+    const p = proj([clip("a", 0, 5)]);
+    expect(splitVideoClipAt(p, 0.05)).toBeNull();
+    expect(splitVideoClipAt(p, 4.95)).toBeNull();
+  });
+
+  it("removes only the matching split auto audio slice and shifts subsequent auto tracks", () => {
+    const p = proj([clip("a", 0, 10)]);
+    p.music = [{ id: "auto-a", mediaId: "m", start: 0, in: 0, out: 10, volume: 1, auto: true }];
+    let n = 0;
+    const split = splitVideoClipAt(p, 4, (prefix) => `${prefix}${++n}`)!;
+    const after = withoutVideoClip(split.project, "a");
+    expect(after.video.map((v) => v.id)).toEqual(["v1"]);
+    expect(after.music).toEqual([{ id: "a2", mediaId: "m", start: 0, in: 4, out: 10, volume: 1, auto: true }]);
   });
 });
 

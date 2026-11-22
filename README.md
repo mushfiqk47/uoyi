@@ -36,14 +36,21 @@ Installed and on `PATH` on this machine:
 | --- | --- |
 | Node.js 22+ (Node 26 here) + npm | Dev/build and local API server |
 | `yt-dlp` | Resolves YouTube/Twitch/Kick/channel links to playable media and prepares VODs with sound |
+| `streamlink` | Server-side live stream recording (Viewer → **Record · server**) at original quality with no dropped frames |
+| `scenedetect` (PySceneDetect) | Optional: visual scene-change detection for the AI Clip Finder (`pip install scenedetect`) |
 | `ffmpeg` / `ffprobe` (gyan.dev build, NVENC available) | Clip finalization, audio repair, caption audio prep |
-| `nemo-speech` (NeMo-Speech.cpp CLI, prebuilt release) | Local speech-to-text with Parakeet TDT 0.6B v3 |
+| `nemo-speech` (NeMo-Speech.cpp CLI, prebuilt release) | Optional: an alternative local ASR backend; audio.cpp is the default |
 | An OpenAI-compatible chat endpoint | AI clip finding / moment scoring |
 
-No ASR model is bundled. The app reports `installed: false` for every entry in `models.json`
-until you download one from **Settings → AI → Caption model** (each is roughly 630 MB) — captions
-and transcript-based clip finding stay disabled until then. Rendering, streaming and manual
-clipping do not need a model.
+No ASR runtime or model is bundled. Pressing **Download & use** under **Settings → AI → Caption
+model** — or the inline **Download & set up** button in the AI Clip Finder when transcription is
+missing — checks the system and provisions everything itself: it downloads the **latest prebuilt**
+audio.cpp runtime (~35 MB portable build) into `transcript\` and the chosen model GGUF (Parakeet
+TDT ~916 MB by default) into the repo's existing `models\` folder, then runs them by absolute
+path — nothing is added to PATH, no CLI install is required, and because the storage lives inside
+the project folder it travels with it between machines. Until a model is
+downloaded, captions and transcript-based clip finding fall back to Gemini when a server key is
+configured. Rendering, streaming and manual clipping do not need a model.
 
 ---
 
@@ -61,11 +68,14 @@ npm -v
 ffmpeg -version    # first line is enough
 ffprobe -version
 yt-dlp --version
+streamlink --version  # optional: enables server-side stream recording (pip install streamlink)
+scenedetect --version # optional: enables scene-aware AI clip finding (pip install scenedetect)
 nemo-speech --version   # optional until you generate captions
 ```
 
-`node`, `npm`, `ffmpeg`, `ffprobe` and `yt-dlp` must print a version. `nemo-speech` can wait until
-you need captions; `/api/health` reports which ones the server actually found.
+`node`, `npm`, `ffmpeg`, `ffprobe` and `yt-dlp` must print a version. `nemo-speech`, `streamlink`
+and `scenedetect` can wait until you need their features; `/api/health` reports which ones the
+server actually found (`streamlink`, `scenedetect` flags).
 
 ### 2. Install and start
 
@@ -102,8 +112,10 @@ for `[clipweave] local API unavailable` and see Troubleshooting.
 
 - **Settings → AI**: base URL, API key, chat model, then **Test connection**. Needed for AI clip
   finding; rendering works without it.
-- **Settings → AI → Caption model**: pick a model and press **Download & use** (~630 MB per model)
-  before generating captions. The catalog lives in `models.json`; downloads run `nemo-speech pull`.
+- **Settings → AI → Caption model**: pick a model and press **Download & use**. The button
+  downloads the audio.cpp runtime (~35 MB) once, then the model (~916 MB for Parakeet, with a
+  live progress bar) into the repo's `models\` folder. Entries that audio.cpp does not
+  provide (Parakeet CTC, Nemotron EN) use the optional `nemo-speech` CLI instead.
 
 ### Everyday launch
 
@@ -154,21 +166,19 @@ The same dependency-free Node handler is used two ways:
 | `GET /api/media/status?id=...` | `preparing` / `ready` / `failed`. |
 | `GET /media?id=...` | Serves the prepared MP4 with HTTP Range support. Waits until preparation finishes. |
 | `GET /stream?url=...` | CORS-safe proxy for HLS playlists and media segments. Rewrites playlist URIs, caches signed segments locally, supports Range/206. |
-| `POST /api/captions/generate` | Converts uploaded audio to 16 kHz mono WAV with ffmpeg, then transcribes with the selected model via the `nemo-speech transcribe` CLI (GPU). If a NeMo URL is configured, it tries that HTTP server first. |
+| `POST /api/captions/generate` | Converts uploaded audio to 16 kHz mono WAV with ffmpeg, then transcribes with word-level timestamps: audio.cpp first (`transcript\`), then the `nemo-speech transcribe` CLI, then Gemini as last resort. If a NeMo URL is configured, it tries that HTTP server first. |
 | `POST /api/clip/finalize` | Trims/finalizes a captured WebM into H.264/AAC MP4 using **NVENC** (CPU fallback) and returns the bytes with `X-Clipweave-Has-Audio/Video/Gpu` response headers. |
-| `POST /api/render` | Single-request encode of timeline JPEG frames + optional mixed WAV. Used by scripts/`curl`. |
-| `POST /api/render/start` | Opens a render session (`{fps,width,height,format,duration}`) → `{id}`. |
-| `POST /api/render/frames?id=` | Appends a batch of `frames` JPEG parts to the session. |
-| `POST /api/render/finish?id=` | Optional `audio` WAV → encodes and returns the video file. |
-| `POST /api/render/abort?id=` | Drops the session and deletes its frames. |
+| `POST /api/render/native` · `GET /api/render/native/status` · `GET /api/render/native/result` · `POST /api/render/native/abort` | Native FFmpeg/NVENC timeline export (`?async=1` progress polling, ASS text/caption burn-in, HTTP Range output download). |
 | `POST /api/upload` | Streams an uploaded local file into a media job (`/media?id=...`). |
-| `POST /api/analyze` | Extracts audio, transcribes with NeMo on GPU, returns a timestamped transcript + duration/size. |
+| `GET /api/streamlink/list` · `POST /api/streamlink/record` · `GET /api/streamlink/status` · `POST /api/streamlink/stop` · `POST /api/streamlink/cancel` | Server-side live recording via Streamlink: writes straight to disk, losslessly remuxes `.ts` → faststart `.mp4` on stop, and exposes active jobs across reloads. |
+| `POST /api/scenedetect/start` · `GET /api/scenedetect/status` · `POST /api/scenedetect/cancel` | Detects visual scene changes with PySceneDetect or automatic FFmpeg `scenedetect` fallback (`{start,end,duration}` spans). |
+| `POST /api/analyze` | Extracts audio, transcribes with NeMo/Gemini, and extracts FFmpeg audio peaks + silences. |
 | `POST /api/clip/cut` | Cuts a moment from a prepared media file into an H.264/AAC MP4 + thumbnail (`/media/clip?id=...`). |
 | `POST /api/facecam/detect` | YuNet + SFace detection via `scripts/facecam_detect.py`; returns normalized face boxes and the best matching face. |
-| `GET /api/models` | Model catalog from `web/models.json` with `installed` flags. |
-| `POST /api/models/download` | Runs `nemo-speech pull <repo>` for the catalog entry, in the background. |
-| `GET /api/models/status?id=...` | Download progress/log (`downloading` / `ready` / `failed`). |
-| `GET /api/health` | Service status. |
+| `GET /api/models` | Model catalog from `models.json` with `installed` flags and the backend that will run each entry (`audiocpp` / `nemo`). |
+| `POST /api/models/download` | Provisions the model: downloads the latest audio.cpp prebuilt runtime when missing (`transcript\`), then the GGUF into the repo's `models\` folder; entries without an audio.cpp package fall back to `nemo-speech pull <repo>`. |
+| `GET /api/models/status?id=...` | Download progress/log/percent (`downloading` / `ready` / `failed`). |
+| `GET /api/health` · `GET /api/cache` · `POST /api/cache/prune` | Service/binary readiness plus temp media cache usage and manual pruning. |
 
 AI credentials are **not bundled**. Set the base URL, API key, and model in **Settings → AI**, then
 press **Test connection**. The values are saved in this browser's `localStorage` only.
@@ -206,6 +216,12 @@ If your endpoint requires paid credits, switch to a free model in Settings → A
 - Every card in the Records gallery has a **Find clips** button. It runs the same local AI Clip
   Finder on that recording: GPU transcription, best-moment scoring, then clips saved to Clips with
   an option to open them in the Editor.
+- When Streamlink is installed and the tile plays a real http(s) stream URL, the tile's **Record**
+  button records **on the server** (shown as `Record … · server`): Streamlink writes the stream
+  straight to disk at the live edge — original quality, no dropped frames, and it keeps recording
+  while the tab is hidden or closed. One continuous take: **Stop** saves the whole file to
+  **Records**, and closing the tile auto-saves it. Without Streamlink the tile falls back to
+  browser recording and hints `pip install streamlink`.
 
 ### AI auto clip finder
 1. Toggle **Viewer → AI auto clip** (or press the Sparkles button on a tile for a one-off check).
@@ -224,7 +240,9 @@ The **AI Clip Finder** card on the Clips screen accepts a **YouTube link** or a 
 4. `POST /api/clip/cut` uses ffmpeg + NVENC to cut each moment into a clean H.264/AAC MP4 with a thumbnail.
 5. The clips are stored in IndexedDB and appear in **Clips** with an `AI n/10` chip, ready to edit.
 
-The **Create AI clips** button opens a setup modal where you choose the source (YouTube link or local file), max clips, minimum AI score, min/max clip length, and an optional focus hint. There is no separate “AI pick best” button — the finder does the ranking and cutting in one pass.
+The **Create AI clips** button opens a setup modal where you choose the source (YouTube link or local file), max clips, minimum AI score, min/max clip length, an optional focus hint, and **Scene detection**.
+
+**Scene detection** (on by default when PySceneDetect is installed) runs `POST /api/scenedetect/start` in parallel with the audio analysis — it adds no extra wall time. The detected scene-change timestamps are passed to the AI as extra candidates for moments that speech alone misses (kills, big plays, scene transitions), and every pick's start is snapped onto the nearest visual cut so each clip opens on a clean boundary. The same toggle appears on the Records **Find clips** form.
 
 ### Facecam detection (Editor → Frame → Facecam detection)
 Local **YuNet** face detection + **SFace** identity matching, via OpenCV in Python:
@@ -253,12 +271,11 @@ Local **YuNet** face detection + **SFace** identity matching, via OpenCV in Pyth
 - Timeline toolbar: zoom out, **Fit**, and an accent **+ Zoom** button; drag clip edges to trim.
 - Frame layout (fill/fit/facecam split), zoom/pan, captions, text, social overlays (TikTok/Shorts/Reels),
   media import, reusable templates with undo/redo (120 steps).
-- **Render** snapshots the project into a job in the **Queue**. The browser composites timeline
-  frames and mixes audio, then uploads frames to the local API in batches of 48 (a session started
-  with `POST /api/render/start` and closed with `/api/render/finish`) for FFmpeg encoding (NVENC
-  when available, CPU fallback otherwise). Defaults are 1080p, 60 fps, MP4. Batching rather than a
-  streaming body is deliberate: Chrome only streams `fetch` bodies over HTTP/2 and the dev server
-  is HTTP/1.1.
+- **Render** snapshots the project into the **Queue** (`1` job at a time). When server FFmpeg is
+  available (`/api/health`), `src/lib/render.ts` exports via `POST /api/render/native?async=1` using
+  FFmpeg/NVENC and ASS caption/text overlays; otherwise it falls back to browser Canvas + `MediaRecorder`.
+- Preview transport bar includes a **Safe zones** toggle to preview TikTok/Reels/Shorts clearances,
+  and the timeline features decoded audio waveforms (`src/editor/waveform.ts`) and magnetic snapping.
 - The social overlay is **preview-only**: it shows on the Editor phone frame, never in the exported file.
 
 ### Storage
@@ -330,21 +347,26 @@ src/
     Editor.tsx                        # Editor shell and tab layout (incl. Text)
     Queue.tsx                         # Render queue screen
     Settings.tsx                      # All settings incl. AI and model download
+  features/
+    ai-clips/                         # Shared ClipFinderFields form + validation
+    viewer/                           # StreamCard + useHlsStream/useAudioMonitor/useStreamRecorder/useAiAutoClip
   queue/
     useRenderQueue.ts                 # Queue persistence, actions, and render lifecycle
-  editor/                             # Preview, Timeline (Video/Text/Captions/Audio), panels, player
+  editor/                             # Preview, Timeline, panels/, waveform.ts, facecam.ts, player.ts
+  platform/
+    api/                              # Typed fetch wrappers (client, ai, media, models, scenedetect, streamlink, streams)
+    storage/                          # keys.ts, migrations.ts, clipRepository.ts
   lib/
-    ai/                               # openai.ts, captions.ts, streamResolve.ts, audioSample.ts, models.ts
-    compositor.ts, playback.ts, render.ts, recorder.ts   # rolling buffer + LiveRecorder
-    db.ts, media.ts, project.ts, settings.ts, types.ts, util.ts
-    clipFinalize.ts                   # Client helper for /api/clip/finalize
+    ai/                               # findClips, openai, scenes, feedback, captions, audioSample
+    compositor.ts, playback.ts, render.ts, recorder.ts
+    db.ts, media.ts, project.ts, settings.ts, subtitles.ts, templates.ts, types.ts, util.ts
   styles/                             # tokens.css, base.css, app.css
 models.json                           # ASR model catalog for Settings → AI
-models/                               # YuNet + SFace ONNX models
+models/                               # YuNet ONNX face detection model
 scripts/facecam_detect.py             # Local OpenCV face detection helper
 vite.config.ts                        # Mounts the local API as Vite middleware
 public/img/logo.svg                   # Clipweave favicon / mark
-server/dev-api.cjs                   # Local API (Vite middleware in dev, port 8080 standalone)
+server/                               # Modular Node API (index.cjs, router.cjs, routes/*, lib/*, services/*)
 ```
 
 ---

@@ -406,7 +406,7 @@ export function drawFrame(ctx: CanvasRenderingContext2D, W: number, H: number, f
   const { project: p, time } = f;
   ctx.save();
   ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "high";
+  ctx.imageSmoothingQuality = "medium";
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, W, H);
   const a = activeClipAt(p, time);

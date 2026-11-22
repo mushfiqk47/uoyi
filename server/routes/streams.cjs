@@ -2,42 +2,34 @@
 
 const http = require("node:http");
 const https = require("node:https");
-const { json, fail, readJson, assertSafePublicUrl } = require("../lib/http.cjs");
-const { run, resolveYtDlp, friendlyYtDlpError } = require("../lib/proc.cjs");
+const { json, fail, readJson } = require("../lib/http.cjs");
+const { run, hasTool } = require("../lib/proc.cjs");
 const { isPlaylist, rewritePlaylist } = require("../lib/hls.cjs");
+const { validateExternalHttpUrl } = require("../lib/security.cjs");
 const { pickPlayable, startPrepare, detectDirectMedia } = require("../services/media.cjs");
 
-const SEGMENT_CACHE = new Map(); // url -> { body, type }
+const SEGMENT_CACHE = new Map(); // url -> { body, type, bytes }
 const SEGMENT_LIMIT = 64;
-const MAX_ENTRY_BYTES = 8 * 1024 * 1024;
-const MAX_CACHE_BYTES = 64 * 1024 * 1024;
-let cacheBytes = 0;
+const SEGMENT_MAX_BYTES = 64 * 1024 * 1024;
+let segmentCacheBytes = 0;
 
-function cacheGet(key) {
-  const entry = SEGMENT_CACHE.get(key);
-  if (!entry) return null;
-  // Promote to MRU so hot HLS segments stay cached.
-  SEGMENT_CACHE.delete(key);
-  SEGMENT_CACHE.set(key, entry);
-  return entry;
-}
-
-function cacheSet(key, body, type) {
-  if (body.length > MAX_ENTRY_BYTES) return;
-  const existing = SEGMENT_CACHE.get(key);
+function cacheSegment(href, body, type) {
+  const existing = SEGMENT_CACHE.get(href);
   if (existing) {
-    cacheBytes -= existing.body.length;
-    SEGMENT_CACHE.delete(key);
+    segmentCacheBytes -= existing.bytes;
+    SEGMENT_CACHE.delete(href);
   }
-  while (SEGMENT_CACHE.size >= SEGMENT_LIMIT || cacheBytes + body.length > MAX_CACHE_BYTES) {
+  const bytes = body.length;
+  while ((SEGMENT_CACHE.size >= SEGMENT_LIMIT || segmentCacheBytes + bytes > SEGMENT_MAX_BYTES) && SEGMENT_CACHE.size > 0) {
     const oldestKey = SEGMENT_CACHE.keys().next().value;
-    if (!oldestKey) break;
     const oldest = SEGMENT_CACHE.get(oldestKey);
-    cacheBytes -= oldest.body.length;
+    if (oldest) segmentCacheBytes -= oldest.bytes;
     SEGMENT_CACHE.delete(oldestKey);
   }
-  SEGMENT_CACHE.set(key, { body, type });
-  cacheBytes += body.length;
+  if (bytes <= SEGMENT_MAX_BYTES) {
+    SEGMENT_CACHE.set(href, { body, type, bytes });
+    segmentCacheBytes += bytes;
+  }
 }
 
 function proxyFetch(target, headers) {
@@ -50,25 +42,21 @@ function proxyFetch(target, headers) {
 }
 
 async function apiStream(req, res, query) {
-  const raw = query.get("url") || "";
-  let target;
-  try {
-    target = await assertSafePublicUrl(raw);
-  } catch (e) {
-    return fail(res, 400, e.message || "Bad stream URL");
-  }
+  const check = await validateExternalHttpUrl(query.get("url") || "");
+  if (!check.ok) return fail(res, 400, check.error || "Bad stream URL");
+  const target = check.url;
 
-  if (!req.headers.range) {
-    const cached = cacheGet(target.href);
-    if (cached) {
-      res.statusCode = 200;
-      res.setHeader("Content-Type", cached.type);
-      res.setHeader("Content-Length", cached.body.length);
-      res.setHeader("Access-Control-Allow-Origin", "*");
-      res.setHeader("Cache-Control", "no-store");
-      res.end(cached.body);
-      return;
-    }
+  const cached = SEGMENT_CACHE.get(target.href);
+  if (cached) {
+    // Refresh LRU order
+    SEGMENT_CACHE.delete(target.href);
+    SEGMENT_CACHE.set(target.href, cached);
+    res.statusCode = 200;
+    res.setHeader("Content-Type", cached.type);
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Cache-Control", "no-store");
+    res.end(cached.body);
+    return;
   }
 
   const headers = {};
@@ -80,25 +68,13 @@ async function apiStream(req, res, query) {
   } catch (e) {
     return fail(res, 502, `Couldn't reach that stream: ${e.message}`);
   }
-  res.on("close", () => {
-    if (!upstream.destroyed) upstream.destroy();
-  });
 
-  const status = upstream.statusCode || 200;
   const type = upstream.headers["content-type"] || "application/octet-stream";
-  const playlist = status >= 200 && status < 300 && isPlaylist(type, target.href);
+  const playlist = isPlaylist(type, target.href);
 
   if (playlist) {
     const chunks = [];
-    let size = 0;
-    for await (const c of upstream) {
-      size += c.length;
-      if (size > MAX_ENTRY_BYTES) {
-        upstream.destroy();
-        return fail(res, 502, "Playlist too large");
-      }
-      chunks.push(c);
-    }
+    for await (const c of upstream) chunks.push(c);
     const rewritten = rewritePlaylist(Buffer.concat(chunks).toString("utf8"), target);
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
@@ -108,41 +84,33 @@ async function apiStream(req, res, query) {
     return;
   }
 
-  // Forward upstream headers and stream immediately so files > 8MB are never truncated.
-  res.statusCode = status;
+  if (!req.headers.range) {
+    const chunks = [];
+    let size = 0;
+    for await (const c of upstream) {
+      size += c.length;
+      if (size > 8 * 1024 * 1024) break;
+      chunks.push(c);
+    }
+    if (size <= 8 * 1024 * 1024) {
+      const body = Buffer.concat(chunks);
+      cacheSegment(target.href, body, type);
+      res.statusCode = 200;
+      res.setHeader("Content-Type", type);
+      res.setHeader("Content-Length", body.length);
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Cache-Control", "no-store");
+      res.end(body);
+      return;
+    }
+  }
+
+  res.statusCode = upstream.statusCode || 200;
   for (const key of ["content-type", "content-length", "content-range", "accept-ranges"]) {
     if (upstream.headers[key]) res.setHeader(key, upstream.headers[key]);
   }
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Cache-Control", "no-store");
-
-  const shouldCache = !req.headers.range && status === 200;
-  const teeChunks = shouldCache ? [] : null;
-  let teeSize = 0;
-  let cacheAborted = false;
-
-  upstream.on("data", (chunk) => {
-    if (teeChunks && !cacheAborted) {
-      teeSize += chunk.length;
-      if (teeSize <= MAX_ENTRY_BYTES) teeChunks.push(chunk);
-      else {
-        cacheAborted = true;
-        teeChunks.length = 0;
-      }
-    }
-    if (!res.write(chunk)) upstream.pause();
-  });
-  res.on("drain", () => upstream.resume());
-  upstream.on("end", () => {
-    if (teeChunks && !cacheAborted && teeChunks.length) {
-      cacheSet(target.href, Buffer.concat(teeChunks), type);
-    }
-    res.end();
-  });
-  upstream.on("error", () => {
-    if (!res.headersSent) fail(res, 502, "Stream interrupted");
-    else res.destroy();
-  });
+  upstream.pipe(res);
 }
 
 function titleFromDirectUrl(rawUrl) {
@@ -157,11 +125,8 @@ function titleFromDirectUrl(rawUrl) {
 
 async function apiResolve(req, res) {
   const { url } = await readJson(req);
-  try {
-    await assertSafePublicUrl(url);
-  } catch (e) {
-    return fail(res, 400, e.message || "Paste an http(s) link.");
-  }
+  const check = await validateExternalHttpUrl(url);
+  if (!check.ok) return fail(res, 400, check.error || "Paste a public http(s) link.");
 
   const direct = await detectDirectMedia(String(url));
   if (direct.direct) {
@@ -175,19 +140,18 @@ async function apiResolve(req, res) {
     });
   }
 
-  const ytDlp = await resolveYtDlp();
-  if (!ytDlp) {
+  const ytDlpAvailable = await hasTool("yt-dlp", ["--version"]);
+  if (!ytDlpAvailable) {
     return fail(
       res,
       422,
-      "yt-dlp is not available in this cloud container, so YouTube/Twitch/Kick page links can't be extracted server-side. Use Capture Tab in the Viewer to capture any playing tab, paste a direct .m3u8/.mp4 stream URL, or upload a local video in Clips.",
+      "yt-dlp is not installed in this cloud container, so YouTube/Twitch/Kick page links can't be extracted server-side. Use Capture Tab in the Viewer to capture any playing tab, paste a direct .m3u8/.mp4 stream URL, or upload a local video in Clips.",
     );
   }
 
-  const r = await run(ytDlp, ["-J", "--no-warnings", "--no-playlist", String(url)], { timeout: 90000 });
+  const r = await run("yt-dlp", ["-J", "--no-warnings", "--no-playlist", String(url)], { timeout: 90000 });
   if (r.code !== 0) {
-    const msg = friendlyYtDlpError(r.stderr);
-    return fail(res, /blocked server-side extraction/i.test(msg) ? 422 : 502, msg);
+    return fail(res, 502, r.stderr.split("\n").filter(Boolean).slice(-1)[0] || "yt-dlp couldn't resolve that link.");
   }
   let info;
   try {

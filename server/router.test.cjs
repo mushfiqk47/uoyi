@@ -11,10 +11,14 @@ test("every route key is a method and path pair", () => {
   }
 });
 
-test("match finds the existing API surface", () => {
+test("match finds the active API surface and omits dead legacy render routes", () => {
   for (const [method, pathname] of [
     ["GET", "/api/health"],
+    ["GET", "/api/cache"],
+    ["POST", "/api/cache/prune"],
     ["GET", "/api/models"],
+    ["GET", "/api/streamlink/list"],
+    ["POST", "/api/streamlink/record"],
     ["POST", "/api/upload"],
     ["POST", "/api/clip/finalize"],
     ["POST", "/api/clip/cut"],
@@ -28,6 +32,16 @@ test("match finds the existing API surface", () => {
     ["GET", "/media/clip"],
   ]) {
     assert.equal(typeof match(method, pathname), "function", `${method} ${pathname}`);
+  }
+
+  for (const [method, pathname] of [
+    ["POST", "/api/render"],
+    ["POST", "/api/render/start"],
+    ["POST", "/api/render/frames"],
+    ["POST", "/api/render/finish"],
+    ["POST", "/api/render/abort"],
+  ]) {
+    assert.equal(match(method, pathname), null, `legacy route should be removed: ${method} ${pathname}`);
   }
 });
 

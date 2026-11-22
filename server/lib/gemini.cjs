@@ -191,133 +191,162 @@ function distributeWordsOverRange(text, start, end) {
   }));
 }
 
-async function transcribeAudioWithGemini(audioPath, durationSeconds) {
-  const { ai, Type } = await getClient();
-  const buf = await fsp.readFile(audioPath);
-  const duration = Math.max(0.5, Number(durationSeconds) || 30);
-  const audioPart = {
-    inlineData: {
-      mimeType: "audio/mp3",
-      data: buf.toString("base64"),
+const INLINE_AUDIO_LIMIT_BYTES = 12 * 1024 * 1024;
+
+async function uploadAudioPart(ai, audioPath, mimeType = "audio/mp3") {
+  const stat = await fsp.stat(audioPath);
+  if (stat.size <= INLINE_AUDIO_LIMIT_BYTES) {
+    const buf = await fsp.readFile(audioPath);
+    return {
+      part: { inlineData: { mimeType, data: buf.toString("base64") } },
+      cleanup: async () => {},
+    };
+  }
+  const uploaded = await ai.files.upload({ file: audioPath, config: { mimeType } });
+  let fileInfo = uploaded;
+  let attempts = 0;
+  while (fileInfo?.state === "PROCESSING" && attempts < 30) {
+    await new Promise((r) => setTimeout(r, 1000));
+    fileInfo = await ai.files.get({ name: uploaded.name });
+    attempts++;
+  }
+  return {
+    part: {
+      fileData: {
+        fileUri: fileInfo?.uri || uploaded.uri,
+        mimeType: fileInfo?.mimeType || mimeType,
+      },
+    },
+    cleanup: async () => {
+      if (uploaded?.name) await ai.files.delete({ name: uploaded.name }).catch(() => {});
     },
   };
+}
+
+async function transcribeAudioWithGemini(audioPath, durationSeconds, opts = {}) {
+  const { ai, Type } = await getClient();
+  const duration = Math.max(0.5, Number(durationSeconds) || 30);
+  const langNote = opts?.language ? ` Primary spoken language: ${String(opts.language).trim()}.` : "";
+  const { part: audioPart, cleanup } = await uploadAudioPart(ai, audioPath, "audio/mp3");
 
   try {
-    const { response } = await generateWithFallback(ai, {
-      model: GEMINI_DEFAULT_MODEL,
-      contents: {
-        parts: [
-          audioPart,
-          {
-            text:
-              `Transcribe all spoken words and vocal reactions in this ${duration.toFixed(1)}s audio track accurately. ` +
-              `Return JSON with: text (full transcript), segments (start/end seconds and text), and words (every spoken word with accurate start/end seconds within 0..${duration.toFixed(2)}).`,
-          },
-        ],
-      },
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            text: { type: Type.STRING },
-            segments: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  start: { type: Type.NUMBER },
-                  end: { type: Type.NUMBER },
-                  text: { type: Type.STRING },
+    try {
+      const { response } = await generateWithFallback(ai, {
+        model: GEMINI_DEFAULT_MODEL,
+        contents: {
+          parts: [
+            audioPart,
+            {
+              text:
+                `Transcribe all spoken words and vocal reactions in this ${duration.toFixed(1)}s audio track accurately.${langNote} ` +
+                `Return JSON with: text (full transcript), segments (start/end seconds and text), and words (every spoken word with accurate start/end seconds within 0..${duration.toFixed(2)}).`,
+            },
+          ],
+        },
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              text: { type: Type.STRING },
+              segments: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    start: { type: Type.NUMBER },
+                    end: { type: Type.NUMBER },
+                    text: { type: Type.STRING },
+                  },
                 },
               },
-            },
-            words: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  text: { type: Type.STRING },
-                  start: { type: Type.NUMBER },
-                  end: { type: Type.NUMBER },
+              words: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    text: { type: Type.STRING },
+                    start: { type: Type.NUMBER },
+                    end: { type: Type.NUMBER },
+                  },
                 },
               },
             },
           },
         },
+      }, 45000);
+
+      const parsed = JSON.parse(String(response.text || "{}"));
+      const segments = Array.isArray(parsed.segments)
+        ? parsed.segments
+            .map((s) => ({
+              start: Math.max(0, Math.min(duration, Number(s.start) || 0)),
+              end: Math.max(0.1, Math.min(duration, Number(s.end) || 0)),
+              text: String(s.text || "").trim(),
+            }))
+            .filter((s) => s.text)
+        : [];
+
+      let words = Array.isArray(parsed.words)
+        ? parsed.words
+            .map((w) => {
+              const text = String(w.text ?? w.word ?? "").trim();
+              const start = Math.max(0, Math.min(duration, Number(w.start) || 0));
+              const end = Math.max(start + 0.05, Math.min(duration, Number(w.end) || start + 0.2));
+              return text ? { text, start, end } : null;
+            })
+            .filter(Boolean)
+        : [];
+
+      if (!words.length && segments.length) {
+        words = segments.flatMap((s) => distributeWordsOverRange(s.text, s.start, Math.max(s.start + 0.2, s.end)));
+      }
+      const text = String(parsed.text || segments.map((s) => s.text).join(" ") || "").trim();
+      if (!words.length && text) {
+        words = distributeWordsOverRange(text, 0, duration);
+      }
+      if (text || words.length) {
+        return { text, segments, words, provider: "aistudio-gemini" };
+      }
+    } catch {
+      // Fall back to dedicated transcription model below
+    }
+
+    const { response: fallback } = await generateWithFallback(ai, {
+      model: GEMINI_TRANSCRIBE_MODEL,
+      contents: {
+        parts: [audioPart, { text: `Transcribe all speech in this audio.${langNote}` }],
       },
-    }, 45000);
-
-    const parsed = JSON.parse(String(response.text || "{}"));
-    const segments = Array.isArray(parsed.segments)
-      ? parsed.segments
-          .map((s) => ({
-            start: Math.max(0, Math.min(duration, Number(s.start) || 0)),
-            end: Math.max(0.1, Math.min(duration, Number(s.end) || 0)),
-            text: String(s.text || "").trim(),
-          }))
-          .filter((s) => s.text)
-      : [];
-
-    let words = Array.isArray(parsed.words)
-      ? parsed.words
-          .map((w) => {
-            const text = String(w.text ?? w.word ?? "").trim();
-            const start = Math.max(0, Math.min(duration, Number(w.start) || 0));
-            const end = Math.max(start + 0.05, Math.min(duration, Number(w.end) || start + 0.2));
-            return text ? { text, start, end } : null;
-          })
-          .filter(Boolean)
-      : [];
-
-    if (!words.length && segments.length) {
-      words = segments.flatMap((s) => distributeWordsOverRange(s.text, s.start, Math.max(s.start + 0.2, s.end)));
-    }
-    const text = String(parsed.text || segments.map((s) => s.text).join(" ") || "").trim();
-    if (!words.length && text) {
-      words = distributeWordsOverRange(text, 0, duration);
-    }
-    if (text || words.length) {
-      return { text, segments, words, provider: "aistudio-gemini" };
-    }
-  } catch {
-    // Fall back to dedicated transcription model below
+    });
+    const text = String(fallback.text || "").trim();
+    const words = text ? distributeWordsOverRange(text, 0, duration) : [];
+    return {
+      text,
+      segments: text ? [{ start: 0, end: duration, text }] : [],
+      words,
+      provider: "aistudio-gemini",
+    };
+  } finally {
+    await cleanup();
   }
-
-  const { response: fallback } = await generateWithFallback(ai, {
-    model: GEMINI_TRANSCRIBE_MODEL,
-    contents: {
-      parts: [audioPart, { text: "Transcribe all speech in this audio." }],
-    },
-  });
-  const text = String(fallback.text || "").trim();
-  const words = text ? distributeWordsOverRange(text, 0, duration) : [];
-  return {
-    text,
-    segments: text ? [{ start: 0, end: duration, text }] : [],
-    words,
-    provider: "aistudio-gemini",
-  };
 }
 
-async function analyzeMediaWithGemini({ audioPath, frameFiles = [], durationSeconds }) {
+async function analyzeMediaWithGemini({ audioPath, frameFiles = [], durationSeconds, topPeaks = [], nemoTranscript = "" }) {
   const { ai } = await getClient();
   const duration = Math.max(1, Number(durationSeconds) || 30);
   const parts = [];
+  let cleanupAudio = async () => {};
 
   if (audioPath) {
     try {
-      const audioBuf = await fsp.readFile(audioPath);
-      if (audioBuf.length > 0) {
-        parts.push({
-          inlineData: {
-            mimeType: "audio/mp3",
-            data: audioBuf.toString("base64"),
-          },
-        });
+      const st = await fsp.stat(audioPath);
+      if (st.size > 0) {
+        const uploaded = await uploadAudioPart(ai, audioPath, "audio/mp3");
+        parts.push(uploaded.part);
+        cleanupAudio = uploaded.cleanup;
       }
     } catch {
-      /* audio optional for silent gameplay videos */
+      /* audio optional for silent videos */
     }
   }
 
@@ -336,23 +365,33 @@ async function analyzeMediaWithGemini({ audioPath, frameFiles = [], durationSeco
     }
   }
 
+  const peakNote = topPeaks.length
+    ? `\nMeasured audio loudness peaks: ${topPeaks.map((p) => `${p.time.toFixed(1)}s (${p.lufs} LUFS)`).join(", ")}.`
+    : "";
+  const transcriptNote = nemoTranscript
+    ? `\nReference speech transcript:\n${String(nemoTranscript).slice(0, 8000)}`
+    : "";
+
   parts.push({
     text:
-      `Analyze this ${duration.toFixed(1)}s video/stream using both the audio track and the timestamped visual frames. ` +
+      `Analyze this ${duration.toFixed(1)}s video or stream using the audio track, timestamped visual frames, and signal cues.${peakNote}${transcriptNote}\n` +
       `Produce a chronological timestamped log covering the entire duration from 0.0s to ${duration.toFixed(1)}s. ` +
       `For every segment, include:\n` +
       `1. Exact timestamps in the format [start-end] (in seconds, e.g. [12.4-18.9])\n` +
-      `2. Spoken dialogue, screams, laughs, or hype reactions\n` +
-      `3. Key visual gameplay/action events (explosions, car chases, stunts, crashes, Vice City/GTA 6 reveals, easter eggs, HUD/wanted-star spikes, streamer facecam reactions, sudden cuts)\n` +
-      `Keep lines dense, factual, and timestamp-accurate so a clip-finder can pick the best viral moments.`,
+      `2. Spoken dialogue, laughs, hype reactions, jokes, or strong punchlines\n` +
+      `3. Key visual events (action peaks, clutch plays, score/HUD changes, facial reactions, sudden reveals, or scene cuts)\n` +
+      `Keep lines dense, factual, and timestamp-accurate so a clip-finder can pick the best standalone short-form moments.`,
   });
 
-  const { response } = await generateWithFallback(ai, {
-    model: GEMINI_DEFAULT_MODEL,
-    contents: { parts },
-  }, 45000);
-
-  return String(response.text || "").trim();
+  try {
+    const { response } = await generateWithFallback(ai, {
+      model: GEMINI_DEFAULT_MODEL,
+      contents: { parts },
+    }, 45000);
+    return String(response.text || "").trim();
+  } finally {
+    await cleanupAudio();
+  }
 }
 
 async function detectFacecamWithGemini(imageBase64) {

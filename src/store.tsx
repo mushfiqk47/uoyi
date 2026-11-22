@@ -10,6 +10,7 @@ import { once } from "./platform/storage/migrations";
 import { cloneLook, hookTextItem, lookFromSettings, lookOf, newProject, postCopyText } from "./lib/project";
 import { missingPremadeTemplates } from "./lib/templates";
 import { generateCaptionsForBlob } from "./lib/ai/captions";
+import { recordClipFeedback } from "./lib/ai/feedback";
 import { useRenderQueue } from "./queue/useRenderQueue";
 
 export type Screen = "viewer" | "recommend" | "clips" | "editor" | "queue" | "settings";
@@ -289,7 +290,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const addClip = useCallback((c: Clip) => setClips((cs) => [c, ...cs]), [setClips]);
   const updateClip = useCallback(
-    (id: string, patch: Partial<Clip>) => setClips((cs) => cs.map((c) => (c.id === id ? { ...c, ...patch } : c))),
+    (id: string, patch: Partial<Clip>) => {
+      const prev = clipsRef.current.find((c) => c.id === id);
+      if (prev && (prev.aiScore !== undefined || prev.aiTitle)) {
+        const title = prev.aiTitle || prev.streamTitle;
+        if (!prev.favourite && patch.favourite) {
+          recordClipFeedback({ action: "favourite", score: prev.aiScore ?? 7, title, reason: prev.note });
+        }
+        if (!prev.renderedAt && patch.renderedAt) {
+          recordClipFeedback({ action: "render", score: prev.aiScore ?? 7, title, reason: prev.note });
+        }
+        if (!prev.removedAt && patch.removedAt && !prev.edited && !prev.favourite && !prev.renderedAt) {
+          recordClipFeedback({ action: "dismiss", score: prev.aiScore ?? 7, title, reason: prev.note });
+        }
+      }
+      setClips((cs) => cs.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+    },
     [setClips],
   );
   // One state update and one blob pass for a bulk delete, so "Delete all" stays O(n) instead
@@ -298,6 +314,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     async (ids: string[]) => {
       const set = new Set(ids);
       const targets = clipsRef.current.filter((c) => set.has(c.id));
+      for (const c of targets) {
+        if ((c.aiScore !== undefined || c.aiTitle) && !c.removedAt && !c.edited && !c.favourite && !c.renderedAt) {
+          recordClipFeedback({ action: "dismiss", score: c.aiScore ?? 7, title: c.aiTitle || c.streamTitle, reason: c.note });
+        }
+      }
       setClips((cs) => cs.filter((c) => !set.has(c.id)));
       await Promise.all(
         targets.map(async (c) => {
@@ -335,7 +356,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // ---- project with undo/redo
-  const [project, setProjectState] = usePersisted<Project | null>(STORAGE_KEYS.project, null);
+  const [project, setProjectState] = useState<Project | null>(() => loadJson<Project | null>(STORAGE_KEYS.project, null));
   const [past, setPast] = useState<Project[]>([]);
   const [future, setFuture] = useState<Project[]>([]);
   const pastRef = useRef(past);
@@ -345,6 +366,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const lastEdit = useRef<{ key: string; at: number } | null>(null);
   const projectRef = useRef(project);
   projectRef.current = project;
+  useEffect(() => {
+    const t = window.setTimeout(() => saveJson(STORAGE_KEYS.project, projectRef.current), 300);
+    const flush = () => saveJson(STORAGE_KEYS.project, projectRef.current);
+    window.addEventListener("pagehide", flush);
+    return () => {
+      clearTimeout(t);
+      window.removeEventListener("pagehide", flush);
+    };
+  }, [project]);
 
   const setProject = useCallback(
     (p: Project | null) => {
@@ -378,7 +408,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setFuture([]);
       projectRef.current = next;
       setProjectState(next);
-      if (next.clipId) setClips((cs) => cs.map((c) => (c.id === next.clipId && !c.edited ? { ...c, edited: true } : c)));
+      if (next.clipId) {
+        const existing = clipsRef.current.find((c) => c.id === next.clipId);
+        if (existing && !existing.edited) {
+          if (existing.aiScore !== undefined || existing.aiTitle) {
+            recordClipFeedback({ action: "edit", score: existing.aiScore ?? 7, title: existing.aiTitle || existing.streamTitle, reason: existing.note });
+          }
+          setClips((cs) => cs.map((c) => (c.id === next.clipId && !c.edited ? { ...c, edited: true } : c)));
+        }
+      }
     },
     [setProjectState, setClips],
   );
@@ -470,8 +508,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           const title = social.split("\n")[0].replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 80);
           if (title) p.name = title;
         }
-        const hook = hookTextItem(clip);
-        if (hook) p.texts = [...p.texts, hook];
         if (opts?.applyViralHook && clip.viral.hook) {
           p.texts = [
             ...p.texts,
@@ -489,6 +525,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               background: true,
             },
           ];
+        } else {
+          const hook = hookTextItem(clip);
+          if (hook) p.texts = [...p.texts, hook];
         }
       }
       setProject(p);

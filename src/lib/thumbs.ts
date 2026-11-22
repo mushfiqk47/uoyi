@@ -9,9 +9,9 @@ const THUMB_PREFIX = "thumb:";
 const urls = new Map<string, Promise<string | null>>();
 const MAX_LIVE_URLS = 200;
 
-const thumbKeyFor = (clipId: string): string => `${THUMB_PREFIX}${clipId}`;
+export const thumbKeyFor = (clipId: string): string => `${THUMB_PREFIX}${clipId}`;
 
-function dataUrlToBlob(dataUrl: string): Blob {
+export function dataUrlToBlob(dataUrl: string): Blob {
   const comma = dataUrl.indexOf(",");
   const mime = /data:([^;]+)/.exec(dataUrl.slice(0, comma))?.[1] ?? "image/jpeg";
   const binary = atob(dataUrl.slice(comma + 1));

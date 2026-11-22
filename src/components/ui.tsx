@@ -106,8 +106,8 @@ export function Seg<T extends string | number>({
   );
 }
 
-export function Switch({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
-  return <button type="button" role="switch" className="switch" aria-checked={checked} aria-label={label} onClick={() => onChange(!checked)} />;
+export function Switch({ checked, onChange, label, disabled }: { checked: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean }) {
+  return <button type="button" role="switch" className="switch" aria-checked={checked} aria-label={label} disabled={disabled} onClick={() => onChange(!checked)} />;
 }
 
 export function Range({
@@ -185,13 +185,18 @@ export function AutoTextarea({
   );
 }
 
-export function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: ReactNode }) {
-  return (
-    <label className="field">
+export function Field({ label, children, hint, asGroup }: { label: string; children: ReactNode; hint?: ReactNode; asGroup?: boolean }) {
+  const body = (
+    <>
       <span>{label}</span>
       {children}
       {hint && <small className="muted" style={{ fontSize: 11.5, lineHeight: 1.45 }}>{hint}</small>}
-    </label>
+    </>
+  );
+  return asGroup ? (
+    <div className="field" role="group" aria-label={label}>{body}</div>
+  ) : (
+    <label className="field">{body}</label>
   );
 }
 

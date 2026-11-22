@@ -7,7 +7,7 @@ import { Preview } from "../editor/Preview";
 import { Timeline, type Selection } from "../editor/Timeline";
 import { CaptionsPanel, ClipPanel, FramePanel, MediaPanel, OverlayPanel, TemplatesPanel, TextPanel } from "../editor/panels";
 import { applyFacecam, detectFacecam, isDefaultFacecamRect, waitForReadyVisual } from "../editor/facecam";
-import { activeClipAt, DEFAULT_LAYOUT, fileNameFor, projectDuration, withoutVideoClip } from "../lib/project";
+import { activeClipAt, DEFAULT_LAYOUT, fileNameFor, projectDuration, splitVideoClipAt, withoutVideoClip } from "../lib/project";
 import { importFile } from "../lib/media";
 import { Field, Modal } from "../components/ui";
 import { fmtTime, fmtWhen, uid } from "../lib/util";
@@ -70,7 +70,7 @@ function EditorEmpty() {
           </div>
           <h2>Nothing open in the Editor</h2>
           <p>Open one of your clips, or drop video, pictures and music here to start a 9:16 project from your own files.</p>
-          <div className="row" style={{ marginTop: 6 }}>
+          <div className="row editor-empty-actions">
             <button className="btn accent" onClick={() => fileRef.current?.click()} disabled={busy}>
               {busy ? <span className="spinner" /> : <FolderOpen className="ic" />} Choose files
             </button>
@@ -168,17 +168,18 @@ function EditorWorkspace({ project }: { project: Project }) {
     const t = player.clock.time;
     const a = activeClipAt(latest.current.project, t);
     if (!a) return;
-    const at = a.local;
-    if (at - a.clip.in < 0.1 || a.clip.out - at < 0.1) {
+    if (a.local - a.clip.in < 0.1 || a.clip.out - a.local < 0.1) {
       toast("Move the playhead inside a clip to split it.", "info");
       return;
     }
-    const second = { ...a.clip, id: uid("v"), in: at };
-    editProject((p) => ({
-      ...p,
-      video: p.video.flatMap((v) => (v.id === a.clip.id ? [{ ...v, out: at }, second] : [v])),
-    }));
-    setSelection({ kind: "video", id: second.id });
+    let nextSel: string | null = null;
+    editProject((p) => {
+      const res = splitVideoClipAt(p, t);
+      if (!res) return p;
+      nextSel = res.selectedId;
+      return res.project;
+    });
+    if (nextSel) setSelection({ kind: "video", id: nextSel });
   }, [player, editProject, toast]);
 
   const removeSelected = useCallback(() => {
@@ -248,7 +249,7 @@ function EditorWorkspace({ project }: { project: Project }) {
       start,
       end: Math.min(Math.max(duration, start + 0.5), start + 3),
       x: 0.5,
-      y: 0.2,
+      y: 0.7,
       size: 72,
       color: "#ffffff",
       font: "tiktok",

@@ -8,10 +8,12 @@ const TABLES = [
   require("./routes/streams.cjs"),
   require("./routes/media.cjs"),
   require("./routes/clips.cjs"),
+  require("./routes/streamlink.cjs"),
+  require("./routes/scenedetect.cjs"),
   require("./routes/ai.cjs"),
   require("./routes/facecam.cjs"),
   require("./routes/models.cjs"),
-  require("./routes/render-legacy.cjs"),
+  require("./routes/render.cjs"),
 ];
 
 const ROUTES = new Map();

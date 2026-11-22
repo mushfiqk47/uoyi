@@ -1,6 +1,9 @@
-import { Field } from "../../components/ui";
+import { useEffect, useState } from "react";
+import { Field, Switch } from "../../components/ui";
 import type { FindClipsOptions } from "../../lib/ai/findClips";
 import { VIRAL_FOCUS_PRESETS } from "../../lib/ai/openai";
+import { sceneDetectAvailable } from "../../platform/api/scenedetect";
+import { installSpeechModel, speechModelReady, type SpeechInstallUpdate } from "../../platform/api/models";
 
 export interface ClipFinderValues {
   maxClips: number | "auto";
@@ -8,6 +11,8 @@ export interface ClipFinderValues {
   minLength: number | "auto";
   maxLength: number | "auto";
   focus: string;
+  /** Detect visual scene changes and cut on them (needs PySceneDetect). */
+  sceneDetect: boolean;
 }
 
 export const DEFAULT_CLIP_FINDER: ClipFinderValues = {
@@ -16,6 +21,7 @@ export const DEFAULT_CLIP_FINDER: ClipFinderValues = {
   minLength: "auto",
   maxLength: "auto",
   focus: "",
+  sceneDetect: true,
 };
 
 export interface ClipFinderLimits {
@@ -53,12 +59,65 @@ export function clipFinderOptions(value: ClipFinderValues, threshold: number, li
     focus: value.focus.trim(),
     autoCount,
     autoLength,
+    sceneDetect: value.sceneDetect,
   };
 }
 
 export function clipFinderError(value: ClipFinderValues): string | null {
   if (value.minLength === "auto" || value.maxLength === "auto") return null;
   return value.minLength >= value.maxLength ? "Minimum length must be smaller than maximum length." : null;
+}
+
+/** Inline setup for transcription, shown inside the clip-finder form when no speech model is
+ *  ready yet: one button checks the system and provisions the latest audio.cpp prebuilt
+ *  runtime plus the default Parakeet model into the repo's transcript/ folder. */
+function CaptionModelSetup({ disabled }: { disabled?: boolean }) {
+  const [ready, setReady] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [state, setState] = useState<SpeechInstallUpdate>({ status: "", log: "", progress: 0 });
+  const [error, setError] = useState("");
+
+  const recheck = () => {
+    void speechModelReady().then(setReady);
+  };
+  useEffect(() => {
+    recheck();
+  }, []);
+
+  if (ready !== false) return null;
+
+  const setup = async () => {
+    setBusy(true);
+    setError("");
+    setState({ status: "starting", log: "Starting setup…", progress: 0 });
+    try {
+      await installSpeechModel("parakeet-tdt", setState);
+      setReady(true);
+    } catch (e) {
+      setError((e as Error).message || "Setup failed. Check the dev-server terminal.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const percent = Math.max(0, Math.min(100, state.progress));
+  return (
+    <Field
+      label="Transcription model"
+      asGroup
+      hint="AI clip finding transcribes audio locally. This one-time setup downloads the audio.cpp runtime and the Parakeet model into the app's transcript folder — no other installs needed."
+    >
+      <div className="row">
+        <button className="btn ghost sm" disabled={disabled || busy} onClick={() => void setup()}>
+          {busy ? "Setting up…" : "Download & set up"}
+        </button>
+        {busy && percent > 0 && <span className="pct tabular">{percent}%</span>}
+        {!busy && <span className="muted">Parakeet TDT · word timestamps · auto language</span>}
+      </div>
+      {busy && state.log && <small className="muted" role="status" aria-live="polite">{state.log}</small>}
+      {!busy && error && <small className="danger">{error}</small>}
+    </Field>
+  );
 }
 
 export function ClipFinderFields({
@@ -79,8 +138,14 @@ export function ClipFinderFields({
   const set = (patch: Partial<ClipFinderValues>) => onChange({ ...value, ...patch });
   const clipCounts = [1, 2, 3, 4, 5, 6, 8, 10, 12].filter((n) => !limits?.maxClips || n <= limits.maxClips);
   const scores = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].filter((n) => !limits?.minScore || n >= limits.minScore);
+  const [scenesReady, setScenesReady] = useState<boolean | null>(null);
+  useEffect(() => {
+    void sceneDetectAvailable().then(setScenesReady);
+  }, []);
+  const scenesOn = value.sceneDetect && scenesReady === true;
   return (
     <>
+      <CaptionModelSetup disabled={disabled} />
       <div className="two">
         <Field label="Max clips">
           <select className="select" value={value.maxClips} onChange={(e) => set({ maxClips: e.target.value === "auto" ? "auto" : Number(e.target.value) })} disabled={disabled}>
@@ -115,8 +180,8 @@ export function ClipFinderFields({
           </select>
         </Field>
       </div>
-      <Field label="Focus (optional)" hint={`Tell the AI which moments to look for. Only moments scoring at least ${limits?.minScore ?? "the minimum"} are saved.`}>
-        <div className="row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
+      <Field label="Focus (optional)" asGroup hint={`Tell the AI which moments to look for. Only moments scoring at least ${limits?.minScore ?? "the minimum"} are saved.`}>
+        <div className="row preset-chips">
           {VIRAL_FOCUS_PRESETS.map((p) => (
             <button
               key={p.id}
@@ -129,7 +194,21 @@ export function ClipFinderFields({
             </button>
           ))}
         </div>
-        <textarea className="textarea" rows={2} placeholder="GTA 6 police chases, insane stunts, loud streamer reactions, hidden easter eggs…" value={value.focus} onChange={(e) => set({ focus: e.target.value })} disabled={disabled} />
+        <textarea className="textarea" rows={2} aria-label="Focus (optional)" placeholder="Clutch plays, hilarious fails, loud reactions, hidden easter eggs…" value={value.focus} onChange={(e) => set({ focus: e.target.value })} disabled={disabled} />
+      </Field>
+      <Field
+        label="Scene detection"
+        asGroup
+        hint={
+          scenesReady === false
+            ? "Scene detection requires FFmpeg or PySceneDetect on the local server."
+            : "Detect every visual scene change and give the AI those timestamps as candidates, so clips cut open on a clean boundary. Runs alongside audio analysis."
+        }
+      >
+        <label className="switch-line">
+          <Switch label="Scene detection" checked={scenesOn} onChange={(v) => set({ sceneDetect: v })} disabled={disabled || scenesReady === false} />
+          <span>{scenesReady === false ? "Unavailable on server" : "Cut on visual scene changes"}</span>
+        </label>
       </Field>
     </>
   );

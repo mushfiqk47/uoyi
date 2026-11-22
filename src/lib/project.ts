@@ -18,8 +18,8 @@ export const DEFAULT_CAPTION_STYLE: CaptionStyle = {
   highlight: "#38bdf8",
   stroke: true,
   caps: true,
-  // Hugs the bottom edge of the game section in split mode (s.y is relative to the game area there).
-  y: 0.9,
+  // Sits in the lower third of the game section in split mode (s.y is relative to the game area there).
+  y: 0.65,
   wordsPerLine: 3,
   background: false,
 };
@@ -115,15 +115,65 @@ export function activeClipAt(p: Project, t: number): ActiveClip | null {
 
 /**
  * Removes a video clip together with the sound the app mirrored for it. Audio the user added
- * stays, and the mirrored audio only goes once no remaining video clip uses that media (a split
- * produces several video clips from one media).
+ * stays, and when multiple auto tracks exist from splits only the matching split range is removed
+ * while subsequent auto tracks shift left cleanly.
  */
 export function withoutVideoClip(p: Project, clipId: string): Project {
-  const removed = p.video.find((v) => v.id === clipId);
-  if (!removed) return p;
+  const starts = clipStarts(p);
+  const idx = p.video.findIndex((v) => v.id === clipId);
+  if (idx < 0) return p;
+  const removed = p.video[idx];
+  const removedStart = starts[idx];
+  const removedLen = clipLength(removed);
   const video = p.video.filter((v) => v.id !== clipId);
-  if (video.some((v) => v.mediaId === removed.mediaId)) return { ...p, video };
-  return { ...p, video, music: p.music.filter((m) => !(m.auto && m.mediaId === removed.mediaId)) };
+  const autoForMedia = p.music.filter((m) => m.auto && m.mediaId === removed.mediaId);
+  const stillUsed = video.some((v) => v.mediaId === removed.mediaId);
+
+  const music = p.music
+    .filter((m) => {
+      if (!m.auto || m.mediaId !== removed.mediaId) return true;
+      if (autoForMedia.length <= 1) return stillUsed;
+      const matchesSlice =
+        Math.abs(m.start - removedStart) <= 0.15 &&
+        Math.abs(m.in - removed.in) <= 0.15 &&
+        Math.abs(m.out - removed.out) <= 0.15;
+      return !matchesSlice && stillUsed;
+    })
+    .map((m) => {
+      if (!m.auto) return m;
+      if (m.start >= removedStart + removedLen - 0.1) {
+        return { ...m, start: Math.max(0, Number((m.start - removedLen).toFixed(3))) };
+      }
+      return m;
+    });
+  return { ...p, video, music };
+}
+
+/** Splits the active video clip at `timelineTime`, also splitting any mirrored auto audio track. */
+export function splitVideoClipAt(
+  p: Project,
+  timelineTime: number,
+  makeId: (prefix: string) => string = uid,
+): { project: Project; selectedId: string } | null {
+  const a = activeClipAt(p, timelineTime);
+  if (!a) return null;
+  const at = a.local;
+  if (at - a.clip.in < 0.1 || a.clip.out - at < 0.1) return null;
+  const second = { ...a.clip, id: makeId("v"), in: at };
+  const splitTimeline = a.start + (at - a.clip.in) / a.clip.speed;
+  const video = p.video.flatMap((v) => (v.id === a.clip.id ? [{ ...v, out: at }, second] : [v]));
+  const music = p.music.flatMap((m) => {
+    if (!m.auto || m.mediaId !== a.clip.mediaId) return [m];
+    const mEnd = m.start + (m.out - m.in);
+    if (splitTimeline <= m.start + 0.05 || splitTimeline >= mEnd - 0.05) return [m];
+    const acCut = Number((m.in + (splitTimeline - m.start) * a.clip.speed).toFixed(3));
+    if (acCut <= m.in + 0.05 || acCut >= m.out - 0.05) return [m];
+    return [
+      { ...m, out: acCut },
+      { ...m, id: makeId("a"), start: Number(splitTimeline.toFixed(3)), in: acCut },
+    ];
+  });
+  return { project: { ...p, video, music }, selectedId: second.id };
 }
 
 export function lookOf(p: Project): Look {

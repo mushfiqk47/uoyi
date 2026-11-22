@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Project } from "../lib/types";
 import { MediaPool } from "../lib/playback";
-import { projectDuration } from "../lib/project";
+import { activeClipAt, clipLength, projectDuration } from "../lib/project";
 import { drawFrame, frameReady } from "../lib/compositor";
 
 /** The Editor's clock. Time lives outside React so only the playhead and timecode re-render. */
@@ -77,6 +77,7 @@ export function usePlayer(project: Project): Player {
     let drawnAt = -1;
     let wasReady = false;
     let active = false;
+    let stallHoldStart = 0;
 
     const schedule = () => {
       if (active) return;
@@ -94,12 +95,34 @@ export function usePlayer(project: Project): Player {
       const d = durationRef.current;
       let stateChanged = false;
       if (clock.playing) {
-        clock.time += dt;
-        stateChanged = true;
-        if (clock.time >= d) {
-          clock.time = d;
-          clock.playing = false;
+        const master = pool.masterClock(p, clock.time);
+        const holdingForSeek = Boolean(master && (master.stalling || !master.playing));
+        if (holdingForSeek) {
+          if (!stallHoldStart) stallHoldStart = now;
+        } else {
+          stallHoldStart = 0;
         }
+        if (!holdingForSeek || now - stallHoldStart > 350) {
+          clock.time += dt;
+          if (master && master.playing && !master.stalling) {
+            const clip = activeClipAt(p, clock.time);
+            const inWindow = clip
+              ? master.timelineTime >= clip.start - 0.05 && master.timelineTime < clip.start + clipLength(clip.clip) - 0.02
+              : true;
+            if (inWindow) {
+              const err = master.timelineTime - clock.time;
+              if (Math.abs(err) > 0.05) clock.time = master.timelineTime;
+              else if (Math.abs(err) > 0.004) clock.time += err * 0.45;
+            }
+          }
+          stateChanged = true;
+          if (clock.time >= d) {
+            clock.time = d;
+            clock.playing = false;
+          }
+        }
+      } else {
+        stallHoldStart = 0;
       }
       if (clock.time > d) {
         clock.time = d;

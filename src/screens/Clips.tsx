@@ -1,6 +1,6 @@
-import { memo, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Clapperboard, Copy, Download, Link2, RotateCcw, Scissors, Search, Sparkles, Star, Trash2, Upload, X } from "lucide-react";
-import { useLibrary, useShellStore, useStore, useToastStore } from "../store";
+import { useLibrary, useStore } from "../store";
 import type { Clip } from "../lib/types";
 import { getBlob } from "../lib/db";
 import { ClipThumb } from "../components/ClipThumb";
@@ -17,36 +17,24 @@ import { ClipFinderFields, DEFAULT_CLIP_FINDER, clipFinderError, clipFinderOptio
 type Filter = "all" | "favourites" | "removed";
 
 export function Clips() {
-  const { go } = useShellStore();
-  const { toast } = useToastStore();
+  const { go, toast } = useStore();
   const { clips, deleteClips } = useLibrary();
   const [filter, setFilter] = useState<Filter>("all");
   const [q, setQ] = useState("");
-  // Defer filtering so rapid typing stays 60 fps even with large clip libraries.
-  const deferredQ = useDeferredValue(q);
   const [confirmAll, setConfirmAll] = useState(false);
-
-  // Compute library slice and removed count in a single memoized pass.
-  const { library, removed } = useMemo(() => {
-    const items: Clip[] = [];
-    let removedCount = 0;
-    for (const c of clips) {
-      if (c.recording) continue;
-      items.push(c);
-      if (c.removedAt) removedCount += 1;
-    }
-    return { library: items, removed: removedCount };
-  }, [clips]);
+  // Continuous recordings live only in the Records gallery.
+  const library = useMemo(() => clips.filter((c) => !c.recording), [clips]);
+  const removed = library.filter((c) => c.removedAt).length;
 
   const shown = useMemo(() => {
-    const needle = deferredQ.trim().toLowerCase();
+    const needle = q.trim().toLowerCase();
     return library.filter((c) => {
       if (filter === "removed" ? !c.removedAt : c.removedAt) return false;
       if (filter === "favourites" && !c.favourite) return false;
       if (needle && !`${c.streamTitle} ${c.note}`.toLowerCase().includes(needle)) return false;
       return true;
     });
-  }, [library, filter, deferredQ]);
+  }, [library, filter, q]);
 
   return (
     <main className="page clips">
@@ -57,25 +45,8 @@ export function Clips() {
         </div>
         <div className="row">
           <label className="search">
-            <Search className="ic" aria-hidden="true" />
-            <input
-              className="input"
-              placeholder="Search titles and notes"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              aria-label="Search clips"
-            />
-            {q && (
-              <button
-                type="button"
-                className="search-clear"
-                onClick={() => setQ("")}
-                aria-label="Clear search"
-                title="Clear search"
-              >
-                <X className="ic" />
-              </button>
-            )}
+            <Search className="ic" />
+            <input className="input" placeholder="Search titles and notes" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search clips" />
           </label>
           <Seg<Filter>
             label="Show"
@@ -155,8 +126,7 @@ export function Clips() {
 }
 
 function ClipFinder() {
-  const { settings } = useShellStore();
-  const { toast } = useToastStore();
+  const { settings, toast } = useStore();
   const { addClip, autoCaptionClip } = useLibrary();
   const [open, setOpen] = useState(false);
   const [source, setSource] = useState<"url" | "file">("file");
@@ -175,18 +145,14 @@ function ClipFinder() {
   useEffect(() => {
     if (!open) return;
     setAutoCaption(settings.autoCaptionOnClip);
-    const ac = new AbortController();
-    fetch("/api/health", { signal: ac.signal })
+    fetch("/api/health")
       .then((r) => r.json())
       .then((h) => {
-        const hasYt = !!h?.ytDlp;
-        setYtDlpOk(hasYt);
-        if (hasYt) setSource("url");
+        // yt-dlp availability only changes the link tab's label and hint. Upload stays the
+        // default source — the user switches to a link themselves when they want one.
+        setYtDlpOk(!!h?.ytDlp);
       })
-      .catch((err) => {
-        if ((err as Error)?.name !== "AbortError") setYtDlpOk(false);
-      });
-    return () => ac.abort();
+      .catch(() => setYtDlpOk(false));
   }, [open, settings.autoCaptionOnClip]);
 
   const run = async () => {
@@ -249,6 +215,7 @@ function ClipFinder() {
           width={620}
           footer={
             <>
+              {status && <span className="clip-finder-status" role="status" aria-live="polite">{status}</span>}
               <button className="btn ghost" onClick={() => setOpen(false)} disabled={busy}>Cancel</button>
               <button className="btn accent" onClick={() => void run()} disabled={busy}>
                 {busy ? <span className="spinner" /> : <Sparkles className="ic" />}
@@ -257,7 +224,7 @@ function ClipFinder() {
             </>
           }
         >
-          <Field label="Source">
+          <Field label="Source" asGroup>
             <Seg<"url" | "file">
               label="Source type"
               full
@@ -279,10 +246,10 @@ function ClipFinder() {
                   : "Paste a YouTube or direct .mp4/.webm video link. Clipweave downloads and prepares it locally."
               }
             >
-              <input className="input" placeholder="https://example.com/gta6-trailer.mp4" value={url} onChange={(e) => setUrl(e.target.value)} disabled={busy} />
+              <input className="input" placeholder="https://example.com/gameplay-highlights.mp4" value={url} onChange={(e) => setUrl(e.target.value)} disabled={busy} />
             </Field>
           ) : (
-            <Field label="Video or audio file" hint="Upload any GTA 6 gameplay, trailer, or stream VOD (MP4, WebM, MOV, MPG/MPEG, audio).">
+            <Field label="Video or audio file" asGroup hint="Upload any gameplay, podcast, stream VOD, or video file (MP4, WebM, MOV, MPG/MPEG, audio).">
               <div className="file-field">
                 <input ref={fileRef} type="file" accept="video/*,audio/*,.mpg,.mpeg,video/mpeg" className="visually-hidden" onChange={(e) => setFile(e.target.files?.[0] || null)} disabled={busy} aria-label="Choose a local video or audio file" />
                 <button type="button" className="btn ghost" onClick={() => fileRef.current?.click()} disabled={busy}>
@@ -297,39 +264,34 @@ function ClipFinder() {
           <ClipFinderFields value={finder} onChange={setFinder} disabled={busy} scoreAuto />
 
           <div className="field-row">
-            <Field label="Auto 9:16" hint="Fit the full video inside a vertical 9:16 frame (1080×1920) with a blurred background, like the editor’s Fit view—nothing gets cropped out.">
+            <Field label="Auto 9:16" asGroup hint="Fit the full video inside a vertical 9:16 frame (1080×1920) with a blurred background, like the editor’s Fit view—nothing gets cropped out.">
               <label className="switch-line">
                 <Switch label="Auto 9:16" checked={auto916} onChange={setAuto916} />
                 <span>Save clips as 9:16 (fit, no crop)</span>
               </label>
             </Field>
 
-            <Field label="Auto captions" hint="Generate word-by-word captions for every saved clip so they’re ready to burn into a Short when you render.">
+            <Field label="Auto captions" asGroup hint="Generate word-by-word captions for every saved clip so they’re ready to burn into a Short when you render.">
               <label className="switch-line">
                 <Switch label="Auto captions" checked={autoCaption} onChange={setAutoCaption} />
                 <span>Caption each saved clip</span>
               </label>
             </Field>
           </div>
-
-          {status && <p className="clip-finder-status" role="status" aria-live="polite">{status}</p>}
         </Modal>
       )}
     </>
   );
 }
 
-// Memoized so searching or editing one card's note doesn't re-render every card in the grid.
-const ClipCard = memo(function ClipCard({ clip }: { clip: Clip }) {
+function ClipCard({ clip }: { clip: Clip }) {
   const { settings, openClip, toast } = useStore();
   const { updateClip, deleteClip } = useLibrary();
   const [note, setNote] = useState(clip.note);
   const [preview, setPreview] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const [titling, setTitling] = useState(false);
-  const [downloading, setDownloading] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const postText = useMemo(() => postCopyText(clip), [clip]);
+  const postText = postCopyText(clip);
   useEffect(() => setNote(clip.note), [clip.note]);
 
   const copyPostText = async () => {
@@ -368,15 +330,9 @@ const ClipCard = memo(function ClipCard({ clip }: { clip: Clip }) {
   };
 
   const download = async () => {
-    if (downloading) return;
-    setDownloading(true);
-    try {
-      const b = await getBlob(clip.blobKey);
-      if (!b) return toast("This clip's video is missing.", "error");
-      downloadBlob(b, `${safeFileName(clip.streamTitle)} raw.${b.type.includes("mp4") ? "mp4" : "webm"}`);
-    } finally {
-      setDownloading(false);
-    }
+    const b = await getBlob(clip.blobKey);
+    if (!b) return toast("This clip's video is missing.", "error");
+    downloadBlob(b, `${safeFileName(clip.streamTitle)} raw.${b.type.includes("mp4") ? "mp4" : "webm"}`);
   };
 
   const isNew = !clip.removedAt && !clip.edited && !clip.renderedAt;
@@ -430,7 +386,7 @@ const ClipCard = memo(function ClipCard({ clip }: { clip: Clip }) {
         {clip.viral?.hook && (
           <button
             type="button"
-            className="muted clip-hook"
+            className="clip-hook muted"
             onClick={() => setPreview(true)}
             title={`3s Hook: ${clip.viral.hook} — click for full viral details`}
           >
@@ -472,14 +428,8 @@ const ClipCard = memo(function ClipCard({ clip }: { clip: Clip }) {
                   <Copy className="ic" />
                 </button>
               )}
-              <button
-                className="btn ghost icon sm"
-                onClick={() => void download()}
-                disabled={downloading}
-                aria-label="Download the raw clip"
-                title="Download the raw clip"
-              >
-                {downloading ? <span className="spinner" /> : <Download className="ic" />}
+              <button className="btn ghost icon sm" onClick={download} aria-label="Download the raw clip" title="Download the raw clip">
+                <Download className="ic" />
               </button>
               <button className="btn ghost icon sm" onClick={() => updateClip(clip.id, { removedAt: Date.now() })} aria-label="Remove" title="Remove">
                 <X className="ic" />
@@ -493,28 +443,13 @@ const ClipCard = memo(function ClipCard({ clip }: { clip: Clip }) {
         <Modal
           title="Delete this clip for good?"
           description="Its video is erased from this device. Renders already in the Queue keep working."
-          onClose={() => { if (!deleting) setConfirm(false); }}
+          onClose={() => setConfirm(false)}
           footer={
             <>
-              <button className="btn ghost" onClick={() => setConfirm(false)} disabled={deleting}>
+              <button className="btn ghost" onClick={() => setConfirm(false)}>
                 Keep it
               </button>
-              <button
-                className="btn danger"
-                disabled={deleting}
-                onClick={() => {
-                  void (async () => {
-                    setDeleting(true);
-                    try {
-                      await deleteClip(clip.id);
-                      setConfirm(false);
-                    } finally {
-                      setDeleting(false);
-                    }
-                  })();
-                }}
-              >
-                {deleting ? <span className="spinner" /> : null}
+              <button className="btn danger" onClick={() => deleteClip(clip.id)}>
                 Delete
               </button>
             </>
@@ -523,4 +458,4 @@ const ClipCard = memo(function ClipCard({ clip }: { clip: Clip }) {
       )}
     </article>
   );
-});
+}

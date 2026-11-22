@@ -1,6 +1,8 @@
 import type { ViralDetails } from "../types";
 import { activeAi, type Settings } from "../settings";
 import { chatProxy } from "../../platform/api/ai";
+import { dedupeOverlappingPicks } from "./scenes";
+import { feedbackSummary } from "./feedback";
 
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
@@ -199,9 +201,29 @@ export interface ViralClipSuggestion {
   viral: ViralDetails;
 }
 
+const WINDOW_CHARS = 16000;
+const WINDOW_OVERLAP = 1500;
+
+function transcriptWindows(transcript: string): string[] {
+  if (transcript.length <= WINDOW_CHARS) return [transcript];
+  const chunks: string[] = [];
+  let pos = 0;
+  while (pos < transcript.length && chunks.length < 8) {
+    let end = Math.min(transcript.length, pos + WINDOW_CHARS);
+    if (end < transcript.length) {
+      const nl = transcript.lastIndexOf("\n", end);
+      if (nl > pos + WINDOW_CHARS * 0.6) end = nl;
+    }
+    chunks.push(transcript.slice(pos, end));
+    if (end >= transcript.length) break;
+    pos = Math.max(pos + 1000, end - WINDOW_OVERLAP);
+  }
+  return chunks;
+}
+
 export async function suggestClipsFromTranscript(
   settings: Pick<Settings, "aiProfile" | "aiLocal" | "aiCloud" | "aiGemini" | "aiOpenAi" | "aiKilo" | "aiClipPrompt">,
-  input: { title: string; transcript: string; duration: number },
+  input: { title: string; transcript: string; duration: number; sceneStarts?: string },
   options?: Partial<ClipFinderOptions>,
 ): Promise<ViralClipSuggestion[]> {
   const o: ClipFinderOptions = {
@@ -212,35 +234,45 @@ export async function suggestClipsFromTranscript(
     autoCount: !!options?.autoCount,
     autoLength: !!options?.autoLength,
   };
-  const prompt =
-    `${settings.aiClipPrompt}\n\n` +
-    `Source: ${input.title}\nDuration: ${Math.round(input.duration)}s\n` +
-    (o.focus ? `Creator focus: ${o.focus}\n` : "") +
-    `Timestamped audio/visual log:\n${input.transcript.slice(0, 22000)}\n\n` +
-    `Return JSON:\n` +
-    `{"clips":[{"start":number,"end":number,"title":string,"score":number,"hook":string,"reason":string,"whyViral":string,"platforms":["TikTok","YouTube Shorts","Reels"],"caption":string,"hashtags":["#tag1","#tag2"],"editingTips":string,"breakdown":{"hook":number,"pacing":number,"emotion":number,"shareability":number}}]}\n\n` +
-    `Rules:\n` +
-    `- score and breakdown numbers are 1-10 (9-10 = sure viral lock, 7-8 = strong viral potential).\n` +
-    `- hook: short punchy 3-second on-screen text hook (max 9 words, e.g. "WAIT FOR THE 5-STAR CHASE").\n` +
-    `- whyViral: specific explanation of the retention hook, emotional spike, and why viewers replay/share.\n` +
-    `- editingTips: concrete edit advice (punch-in zoom timing, captions style, SFX, cut dead air).\n` +
-    `- caption + hashtags: ready-to-post short-form social copy.\n` +
-    (o.autoCount
-      ? `- Choose how many clips the source deserves, up to ${o.maxClips}.\n`
-      : `- Keep 1-${o.maxClips} clips.\n`) +
-    (o.autoLength
-      ? `- Choose each clip's length yourself, roughly 10-60 seconds.\n`
-      : `- Each clip must be ${o.minLength}-${o.maxLength} seconds.\n`) +
-    `- Stay strictly within 0..${Math.max(1, Math.floor(input.duration))}.`;
+  const calibration = feedbackSummary();
+  const windows = transcriptWindows(input.transcript);
+  const allSuggestions: ViralClipSuggestion[] = [];
 
-  const out = await chatCompletion(settings, [
-    { role: "system", content: "You are a viral short-form video strategist. Return valid JSON only." },
-    { role: "user", content: prompt },
-  ]);
-  const parsed: any = tryParseJson(out);
-  const clips = Array.isArray(parsed?.clips) ? parsed.clips : Array.isArray(parsed) ? parsed : [];
-  return clips
-    .map((c: any) => {
+  for (let wi = 0; wi < windows.length; wi++) {
+    const windowTag = windows.length > 1 ? ` (Window ${wi + 1}/${windows.length})` : "";
+    const prompt =
+      `${settings.aiClipPrompt}\n\n` +
+      `Source: ${input.title}${windowTag}\nDuration: ${Math.round(input.duration)}s\n` +
+      (o.focus ? `Creator focus: ${o.focus}\n` : "") +
+      (calibration ? `${calibration}\n` : "") +
+      (input.sceneStarts ? `Visual scene changes detected at these times (seconds): ${input.sceneStarts}\n` : "") +
+      `Timestamped audio/visual log:\n${windows[wi]}\n\n` +
+      `Return JSON:\n` +
+      `{"clips":[{"start":number,"end":number,"title":string,"score":number,"hook":string,"reason":string,"whyViral":string,"platforms":["TikTok","YouTube Shorts","Reels"],"caption":string,"hashtags":["#tag1","#tag2"],"editingTips":string,"breakdown":{"hook":number,"pacing":number,"emotion":number,"shareability":number}}]}\n\n` +
+      `Rules:\n` +
+      `- score and breakdown numbers are 1-10 (9-10 = sure viral lock, 7-8 = strong viral potential).\n` +
+      (input.sceneStarts
+        ? `- Prefer clip starts on or just before a listed scene-change time so the cut opens on a clean visual boundary; start mid-action only when the audio hook is too strong to move.\n`
+        : "") +
+      `- hook: short punchy 3-second on-screen text hook (max 9 words, e.g. "WAIT FOR THE FINAL CLUTCH").\n` +
+      `- whyViral: specific explanation of the retention hook, emotional spike, and why viewers replay/share.\n` +
+      `- editingTips: concrete edit advice (punch-in zoom timing, captions style, SFX, cut dead air).\n` +
+      `- caption + hashtags: ready-to-post short-form social copy.\n` +
+      (o.autoCount
+        ? `- Choose how many clips the source deserves, up to ${o.maxClips}.\n`
+        : `- Keep 1-${o.maxClips} clips.\n`) +
+      (o.autoLength
+        ? `- Choose each clip's length yourself, roughly 10-60 seconds.\n`
+        : `- Each clip must be ${o.minLength}-${o.maxLength} seconds.\n`) +
+      `- Stay strictly within 0..${Math.max(1, Math.floor(input.duration))}.`;
+
+    const out = await chatCompletion(settings, [
+      { role: "system", content: "You are a viral short-form video strategist. Return valid JSON only." },
+      { role: "user", content: prompt },
+    ]);
+    const parsed: any = tryParseJson(out);
+    const clips = Array.isArray(parsed?.clips) ? parsed.clips : Array.isArray(parsed) ? parsed : [];
+    for (const c of clips) {
       const start = Math.max(0, Number(c.start) || 0);
       const lo = o.autoLength ? 5 : o.minLength;
       const hi = o.autoLength ? Math.min(300, Math.max(lo + 1, input.duration)) : o.maxLength;
@@ -248,20 +280,20 @@ export async function suggestClipsFromTranscript(
       if (end - start < lo) end = start + lo;
       if (end - start > hi) end = start + hi;
       if (end > input.duration) { end = Math.max(start + 1, input.duration); }
+      if (end <= start + 1) continue;
       const title = String(c.title || "Highlight").slice(0, 80);
       const viral = parseViralDetails(c, title);
-      return {
+      allSuggestions.push({
         start,
         end,
         title,
         reason: String(c.reason || c.whyViral || c.why || "").slice(0, 240),
         score: Math.max(1, Math.min(10, Number(c.score) || 7)),
         viral,
-      };
-    })
-    .filter((c: any) => c.end > c.start + 1)
-    .sort((a: ViralClipSuggestion, b: ViralClipSuggestion) => b.score - a.score)
-    .slice(0, o.maxClips);
+      });
+    }
+  }
+  return dedupeOverlappingPicks(allSuggestions, 0.35).slice(0, o.maxClips);
 }
 
 /** Asks the configured model for one short, creator-style title for a transcript. Returns "" when the model gives nothing usable. */
@@ -333,12 +365,14 @@ export async function judgeMoment(
   settings: Pick<Settings, "aiProfile" | "aiLocal" | "aiCloud" | "aiGemini" | "aiOpenAi" | "aiKilo" | "aiClipPrompt">,
   input: { title: string; transcript: string; snapshot?: string },
 ): Promise<MomentVerdict> {
+  const calibration = feedbackSummary(3);
   const text =
     `${settings.aiClipPrompt}\n\n` +
     `You are watching a LIVE stream right now. Based on the latest speech and optional video frame, decide whether a short vertical clip should be saved NOW.\n` +
+    (calibration ? `${calibration}\n` : "") +
     `Stream: ${input.title}\nLatest speech: ${input.transcript.slice(0, 4000) || "(no speech detected — check visual frame if attached)"}\n\n` +
-    `Return JSON only: {"score":1-10,"title":string,"reason":string,"clip":boolean,"hook":string,"whyViral":string,"platforms":["TikTok","YouTube Shorts"],"caption":string,"hashtags":["#gaming"],"editingTips":string,"breakdown":{"hook":1-10,"pacing":1-10,"emotion":1-10,"shareability":1-10}}. ` +
-    `score: 1=skip, 10=must-clip viral lock. Set clip=true only for a clear reaction, joke, fail, big win, GTA 6 chaos/stunt, or high-energy moment.`;
+    `Return JSON only: {"score":1-10,"title":string,"reason":string,"clip":boolean,"hook":string,"whyViral":string,"platforms":["TikTok","YouTube Shorts"],"caption":string,"hashtags":["#shorts"],"editingTips":string,"breakdown":{"hook":1-10,"pacing":1-10,"emotion":1-10,"shareability":1-10}}. ` +
+    `score: 1=skip, 10=must-clip viral lock. Set clip=true only for a clear reaction, joke, fail, big win, intense action/stunt, or high-energy moment.`;
 
   const userContent: ChatMessage["content"] = input.snapshot
     ? [

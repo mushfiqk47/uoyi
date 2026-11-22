@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { ArrowRight, Clapperboard, MonitorPlay, Scissors } from "lucide-react";
+import { ArrowRight, Check, Clapperboard, Copy, MonitorPlay, Scissors } from "lucide-react";
 import { Modal } from "./ui";
-import { useShellStore } from "../store";
+import { useStore } from "../store";
 
 const steps = (seconds: number) => [
   {
@@ -22,8 +22,16 @@ const steps = (seconds: number) => [
 ];
 
 export function Onboarding({ onClose }: { onClose: () => void }) {
-  const { updateSettings, go, settings } = useShellStore();
+  const { updateSettings, go, settings } = useStore();
   const [i, setI] = useState(0);
+  const [copied, setCopied] = useState(false);
+  const copyInstall = async () => {
+    try {
+      await navigator.clipboard.writeText("pip install streamlink");
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch { /* clipboard unavailable */ }
+  };
   const STEPS = steps(settings.captureSeconds);
   const step = STEPS[i];
   const finish = () => {
@@ -77,6 +85,14 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
           <h3>{step.title}</h3>
           <p>{step.body}</p>
         </div>
+      </div>
+      <div className="onboard-note">
+        <span>
+          Tip: Record saves full-quality video straight on the server. Install it once with <code>pip install streamlink</code>
+        </span>
+        <button className="btn plain icon sm" aria-label="Copy install command" title="Copy command" onClick={() => void copyInstall()}>
+          {copied ? <Check className="ic" /> : <Copy className="ic" />}
+        </button>
       </div>
     </Modal>
   );

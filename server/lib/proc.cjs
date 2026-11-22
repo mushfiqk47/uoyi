@@ -1,7 +1,5 @@
 "use strict";
 
-const fs = require("node:fs");
-const fsp = require("node:fs/promises");
 const { spawn } = require("node:child_process");
 const path = require("node:path");
 
@@ -9,8 +7,6 @@ const ROOT = path.resolve(__dirname, "..", "..");
 
 let nvenc = null;
 let cachedOpenCvPython = undefined;
-let cachedYtDlp = undefined;
-let resolvingYtDlp = null;
 
 function run(cmd, args, { timeout = 0, cwd = ROOT, onSpawn, onStdout } = {}) {
   return new Promise((resolve) => {
@@ -49,68 +45,6 @@ async function hasTool(cmd, args = ["--version"]) {
   return r.code === 0;
 }
 
-async function resolveYtDlp() {
-  if (cachedYtDlp && (cachedYtDlp === "yt-dlp" || fs.existsSync(cachedYtDlp))) {
-    return cachedYtDlp;
-  }
-  if (resolvingYtDlp) return resolvingYtDlp;
-  resolvingYtDlp = (async () => {
-    const candidates = [process.env.YTDLP_BIN, "yt-dlp"];
-    try {
-      const { constants } = require("youtube-dl-exec");
-      if (constants?.YOUTUBE_DL_PATH) candidates.push(constants.YOUTUBE_DL_PATH);
-    } catch {
-      /* optional package */
-    }
-    const cacheBin = path.join(ROOT, ".cache", "bin", process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp");
-    candidates.push(cacheBin);
-
-    for (const bin of candidates.filter(Boolean)) {
-      if (bin !== "yt-dlp" && !fs.existsSync(bin)) continue;
-      if (await hasTool(bin, ["--version"])) {
-        cachedYtDlp = bin;
-        return bin;
-      }
-    }
-
-    // Download yt-dlp zipapp once into .cache/bin if package postinstall scripts were skipped.
-    try {
-      const asset = process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp";
-      const res = await fetch(`https://github.com/yt-dlp/yt-dlp/releases/latest/download/${asset}`, {
-        redirect: "follow",
-        signal: AbortSignal.timeout(30000),
-      });
-      if (res.ok) {
-        const buf = Buffer.from(await res.arrayBuffer());
-        await fsp.mkdir(path.dirname(cacheBin), { recursive: true });
-        const tmp = `${cacheBin}.tmp-${process.pid}`;
-        await fsp.writeFile(tmp, buf);
-        if (process.platform !== "win32") await fsp.chmod(tmp, 0o755);
-        await fsp.rename(tmp, cacheBin);
-        if (await hasTool(cacheBin, ["--version"])) {
-          cachedYtDlp = cacheBin;
-          return cacheBin;
-        }
-      }
-    } catch {
-      /* fall through */
-    }
-    return null;
-  })().finally(() => {
-    resolvingYtDlp = null;
-  });
-  return resolvingYtDlp;
-}
-
-function friendlyYtDlpError(stderr, fallback = "yt-dlp couldn't resolve that link.") {
-  const raw = String(stderr || "");
-  if (/sign in to confirm|not a bot|cookies-from-browser/i.test(raw)) {
-    return "YouTube blocked server-side extraction from this cloud IP. Use Capture Tab in the Viewer to capture any playing YouTube tab, or upload the video file in Clips.";
-  }
-  const line = raw.split("\n").filter(Boolean).slice(-1)[0];
-  return line || fallback;
-}
-
 async function findOpenCvPython() {
   if (cachedOpenCvPython !== undefined) return cachedOpenCvPython;
   const candidates = [process.env.CLIPWEAVE_PYTHON, "python3", "python"].filter(Boolean);
@@ -122,6 +56,46 @@ async function findOpenCvPython() {
     }
   }
   cachedOpenCvPython = null;
+  return null;
+}
+
+let cachedStreamlink = undefined;
+/** Resolves how to invoke Streamlink: the pip `streamlink` launcher when on PATH, otherwise
+ *  `python -m streamlink` (the module ships with the same CLI). Returns null when absent. */
+async function findStreamlink() {
+  if (cachedStreamlink !== undefined) return cachedStreamlink;
+  if (await hasTool("streamlink", ["--version"])) {
+    cachedStreamlink = { cmd: "streamlink", prefix: [] };
+    return cachedStreamlink;
+  }
+  for (const bin of [process.env.CLIPWEAVE_PYTHON, "python3", "python"].filter(Boolean)) {
+    const r = await run(bin, ["-m", "streamlink", "--version"], { timeout: 15000 });
+    if (r.code === 0) {
+      cachedStreamlink = { cmd: bin, prefix: ["-m", "streamlink"] };
+      return cachedStreamlink;
+    }
+  }
+  cachedStreamlink = null;
+  return null;
+}
+
+let cachedScenedetect = undefined;
+/** Resolves how to invoke PySceneDetect, mirroring findStreamlink: the pip `scenedetect`
+ *  launcher when on PATH, otherwise `python -m scenedetect`. Returns null when absent. */
+async function findScenedetect() {
+  if (cachedScenedetect !== undefined) return cachedScenedetect;
+  if (await hasTool("scenedetect", ["--version"])) {
+    cachedScenedetect = { cmd: "scenedetect", prefix: [] };
+    return cachedScenedetect;
+  }
+  for (const bin of [process.env.CLIPWEAVE_PYTHON, "python3", "python"].filter(Boolean)) {
+    const r = await run(bin, ["-m", "scenedetect", "--version"], { timeout: 15000 });
+    if (r.code === 0) {
+      cachedScenedetect = { cmd: bin, prefix: ["-m", "scenedetect"] };
+      return cachedScenedetect;
+    }
+  }
+  cachedScenedetect = null;
   return null;
 }
 
@@ -141,8 +115,8 @@ async function encoderArgs(opts) {
     }
   }
   return nvenc
-    ? ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "18", "-rc", "vbr", "-b:v", "0", "-maxrate", "28M", "-bufsize", "56M", "-pix_fmt", "yuv420p"]
-    : ["-c:v", "libx264", "-preset", opts?.preset || "faster", "-crf", String(opts?.crf ?? 17), "-threads", "0", "-pix_fmt", "yuv420p"];
+    ? ["-c:v", "h264_nvenc", "-preset", opts?.nvencPreset || "p3", "-cq", "23", "-pix_fmt", "yuv420p"]
+    : ["-c:v", "libx264", "-preset", opts?.preset || "superfast", "-crf", "21", "-threads", "0", "-pix_fmt", "yuv420p"];
 }
 
 /** True once detection has run and found NVENC. `null` (not probed yet) reports false. */
@@ -152,21 +126,18 @@ function nvencEnabled() {
 
 async function probe(file) {
   const r = await run("ffprobe", ["-v", "error", "-print_format", "json", "-show_streams", "-show_format", file]);
-  if (r.code !== 0) return { width: 0, height: 0, duration: 0, hasAudio: false, hasVideo: false, videoCodec: "", audioCodec: "" };
+  if (r.code !== 0) return { width: 0, height: 0, duration: 0, hasAudio: false, hasVideo: false };
   let data = {};
   try { data = JSON.parse(r.stdout); } catch { /* unreadable */ }
   const streams = data.streams || [];
   const video = streams.find((s) => s.codec_type === "video");
-  const audio = streams.find((s) => s.codec_type === "audio");
   return {
     width: video?.width || 0,
     height: video?.height || 0,
     duration: Number(data.format?.duration) || Number(video?.duration) || 0,
-    hasAudio: !!audio,
+    hasAudio: streams.some((s) => s.codec_type === "audio"),
     hasVideo: !!video,
-    videoCodec: video?.codec_name || "",
-    audioCodec: audio?.codec_name || "",
   };
 }
 
-module.exports = { ROOT, run, hasTool, resolveYtDlp, friendlyYtDlpError, findOpenCvPython, encoderArgs, nvencEnabled, probe };
+module.exports = { ROOT, run, hasTool, findOpenCvPython, findStreamlink, findScenedetect, encoderArgs, nvencEnabled, probe };

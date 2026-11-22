@@ -102,13 +102,4 @@ describe("LiveRecorder segment saving", () => {
     expect(segments).toHaveLength(1);
     expect(recorders).toHaveLength(1);
   });
-
-  it("uses 6 Mbps and 60 fps for Full HD and 2.5 Mbps / 30 fps for Smooth", async () => {
-    const { recordBitrate, recordFrameRate, pickMime } = await import("./recorder");
-    expect(recordBitrate("fullhd")).toBe(6_000_000);
-    expect(recordBitrate("smooth")).toBe(2_500_000);
-    expect(recordFrameRate("fullhd")).toBe(60);
-    expect(recordFrameRate("smooth")).toBe(30);
-    expect(pickMime()).toBe("video/webm;codecs=h264,opus");
-  });
 });

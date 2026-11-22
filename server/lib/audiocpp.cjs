@@ -169,15 +169,9 @@ const PACKAGES = {
     wordTimes: false,
     note: "Tiny English streaming model (58 MB).",
   },
-  "citrinet": {
-    family: "citrinet_asr",
-    label: "Citrinet ASR",
-    ...gguf("Citrinet-ASR-GGUF", "citrinet-asr-q8_0.gguf"),
-    bytes: 40894464,
-    langs: 1,
-    wordTimes: false,
-    note: "Smallest English model (39 MB).",
-  },
+  // "citrinet" removed 2026-11-23: Hugging Face replaced the GGUF with bytes that CLI
+  // v0.9.6 rejects ("SparseMelFilterbank metadata range mismatch"); re-add once upstream
+  // publishes a compatible build.
   "kroko-en": {
     family: "kroko_asr",
     label: "Kroko Community ASR",
@@ -387,6 +381,7 @@ async function downloadFile(url, dest, onProgress = () => {}) {
       onProgress(total ? Math.min(99, Math.round((received / total) * 100)) : 0, received, total);
     }
     await new Promise((resolve, reject) => ws.end((err) => (err ? reject(err) : resolve())));
+    if (total > 0 && received !== total) throw new Error(`incomplete download: ${received} of ${total} bytes`);
     await fsp.rename(tmp, dest);
     onProgress(100, received, total || received);
   } finally {
@@ -395,40 +390,147 @@ async function downloadFile(url, dest, onProgress = () => {}) {
   }
 }
 
-/** Extracts the portable zip into <root>/bin using Windows' bundled bsdtar (handles zip), with a PowerShell fallback. */
+/** Cheap zip sanity check: the End-of-Central-Directory record must exist near the file tail. */
+async function zipLooksValid(zipPath) {
+  try {
+    const st = await fsp.stat(zipPath);
+    if (st.size < 22) return false;
+    const readLen = Math.min(st.size, 65580);
+    const fh = await fsp.open(zipPath, "r");
+    try {
+      const { buffer } = await fh.read(Buffer.alloc(readLen), 0, readLen, st.size - readLen);
+      for (let i = buffer.length - 22; i >= 0; i--) {
+        if (buffer.readUInt32LE(i) === 0x06054b50) return true;
+      }
+      return false;
+    } finally {
+      await fh.close();
+    }
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Pure-Node zip extractor (stored + deflate entries, no external tools). Used as the last
+ * extraction fallback so a missing/blocked tar.exe or PowerShell can never block setup.
+ */
+function extractZipNode(zipPath, destDir) {
+  const zlib = require("node:zlib");
+  const resolvedDest = path.resolve(destDir);
+  const buf = fs.readFileSync(zipPath);
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 22 - 65558); i--) {
+    if (buf.readUInt32LE(i) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) throw new Error("no zip end-of-central-directory record found");
+  const count = buf.readUInt16LE(eocd + 10);
+  let off = buf.readUInt32LE(eocd + 16);
+  for (let n = 0; n < count; n++) {
+    if (off + 46 > buf.length || buf.readUInt32LE(off) !== 0x02014b50) throw new Error("corrupt zip central directory");
+    const method = buf.readUInt16LE(off + 10);
+    const compSize = buf.readUInt32LE(off + 20);
+    const nameLen = buf.readUInt16LE(off + 28);
+    const extraLen = buf.readUInt16LE(off + 30);
+    const commentLen = buf.readUInt16LE(off + 32);
+    const lho = buf.readUInt32LE(off + 42);
+    const name = buf.toString("utf8", off + 46, off + 46 + nameLen);
+    off += 46 + nameLen + extraLen + commentLen;
+    const outPath = path.resolve(destDir, name);
+    const rel = path.relative(resolvedDest, outPath);
+    if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) throw new Error(`unsafe zip path: ${name}`);
+    if (name.endsWith("/") || name.endsWith("\\")) {
+      fs.mkdirSync(outPath, { recursive: true });
+      continue;
+    }
+    const lhNameLen = buf.readUInt16LE(lho + 26);
+    const lhExtraLen = buf.readUInt16LE(lho + 28);
+    const dataStart = lho + 30 + lhNameLen + lhExtraLen;
+    if (dataStart + compSize > buf.length) throw new Error(`truncated zip entry: ${name}`);
+    const data = buf.subarray(dataStart, dataStart + compSize);
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    if (method === 0) fs.writeFileSync(outPath, data);
+    else if (method === 8) fs.writeFileSync(outPath, zlib.inflateRawSync(data));
+    else throw new Error(`unsupported zip compression method ${method} for ${name}`);
+  }
+  return count;
+}
+
+/** PowerShell string literal: single quotes with embedded quotes doubled. */
+function psQuote(s) {
+  return `'${String(s).replace(/'/g, "''")}'`;
+}
+
+/**
+ * Extracts the portable zip into <root>/bin, trying every mechanism in order so a fresh
+ * machine always succeeds: Windows' bundled bsdtar (handles zip), PowerShell
+ * Expand-Archive (paths safely quoted), then a pure-Node extractor with no dependencies.
+ */
 async function extractRuntime(zipPath, onLog = () => {}) {
   const root = audioCppRoot();
   const bin = binDir();
   const tmp = path.join(root, `.extract-${Date.now()}`);
   await fsp.mkdir(tmp, { recursive: true });
   try {
+    const errors = [];
+    let extracted = false;
     const tarExe = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe");
-    let r = await run(tarExe, ["-xf", zipPath, "-C", tmp], { timeout: 600000 });
-    if (r.code !== 0) {
-      onLog("tar extraction failed, trying PowerShell Expand-Archive…");
-      r = await run(
-        "powershell",
-        ["-NoProfile", "-Command", `Expand-Archive -LiteralPath '${zipPath}' -DestinationPath '${tmp}' -Force`],
-        { timeout: 600000 },
-      );
+    if (fs.existsSync(tarExe)) {
+      const r = await run(tarExe, ["-xf", zipPath, "-C", tmp], { timeout: 600000 });
+      if (r.code === 0) {
+        extracted = true;
+        onLog("Extracted runtime (tar).");
+      } else {
+        errors.push(`tar: ${String(r.stderr || r.stdout || "failed").trim().split("\n").slice(-1)[0] || "exit " + r.code}`);
+      }
+    } else {
+      errors.push("tar: not found");
     }
-    if (r.code !== 0) throw new Error("Could not extract the runtime archive.");
-    // The zip is flat, but find the directory holding the CLI in case packaging changes.
-    let srcDir = tmp;
+
+    if (!extracted) {
+      const cmd = `Expand-Archive -LiteralPath ${psQuote(zipPath)} -DestinationPath ${psQuote(tmp)} -Force`;
+      const r = await run("powershell", ["-NoProfile", "-Command", cmd], { timeout: 600000 });
+      if (r.code === 0) {
+        extracted = true;
+        onLog("Extracted runtime (PowerShell).");
+      } else {
+        errors.push(`Expand-Archive: ${String(r.stderr || r.stdout || "failed").trim().split("\n").slice(-1)[0] || "exit " + r.code}`);
+      }
+    }
+
+    if (!extracted) {
+      try {
+        const n = extractZipNode(zipPath, tmp);
+        extracted = true;
+        onLog(`Extracted runtime (built-in extractor, ${n} entries).`);
+      } catch (e) {
+        errors.push(`built-in extractor: ${String(e.message || e)}`);
+      }
+    }
+
+    if (!extracted) {
+      throw new Error(`Could not extract the runtime archive. Tried: ${errors.join("; ")}`);
+    }
+
+    // The zip is usually flat, but find the directory holding the CLI in case packaging changes.
     const exeName = process.platform === "win32" ? "audiocpp_cli.exe" : "audiocpp_cli";
-    if (!fs.existsSync(path.join(tmp, exeName))) {
+    let srcDir = null;
+    if (fs.existsSync(path.join(tmp, exeName))) {
+      srcDir = tmp;
+    } else {
       const stack = [tmp];
-      let found = null;
-      while (stack.length && !found) {
+      while (stack.length && !srcDir) {
         const dir = stack.pop();
         for (const entry of await fsp.readdir(dir, { withFileTypes: true }).catch(() => [])) {
           if (entry.isDirectory()) stack.push(path.join(dir, entry.name));
-          else if (entry.name === exeName) found = dir;
+          else if (entry.name === exeName) srcDir = dir;
         }
       }
-      if (!found) throw new Error("Runtime archive did not contain audiocpp_cli.");
-      srcDir = found;
     }
+    if (!srcDir) throw new Error("Runtime archive did not contain audiocpp_cli.");
     await fsp.mkdir(bin, { recursive: true });
     for (const entry of await fsp.readdir(srcDir, { withFileTypes: true })) {
       await fsp.cp(path.join(srcDir, entry.name), path.join(bin, entry.name), { recursive: true });
@@ -456,7 +558,9 @@ async function latestRuntime() {
 }
 
 let runtimePromise = null;
-/** Downloads + extracts the latest prebuilt runtime when no CLI is resolvable yet. */
+/** Downloads + extracts the latest prebuilt runtime when no CLI is resolvable yet.
+ *  The zip is validated before extraction and the download retried once, so an
+ *  interrupted transfer can never wedge the setup with a corrupt archive. */
 function ensureRuntime(onLog = () => {}) {
   runtimePromise = runtimePromise || (async () => {
     const found = await resolveCli();
@@ -465,11 +569,24 @@ function ensureRuntime(onLog = () => {}) {
     await fsp.mkdir(root, { recursive: true });
     const { url, tag } = await latestRuntime();
     const zipPath = path.join(root, `audiocpp-${tag}.zip`);
-    onLog(`Downloading audio.cpp runtime ${tag} (~35 MB)…`, 0);
-    await downloadFile(url, zipPath, (pct) => onLog(`Downloading runtime… ${pct}%`, pct));
-    onLog("Extracting runtime…");
-    await extractRuntime(zipPath, onLog);
-    fsp.rm(zipPath, { force: true }).catch(() => {});
+    let lastError = null;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        onLog(attempt === 1 ? `Downloading audio.cpp runtime ${tag} (~35 MB)…` : "Download looked broken — retrying…", 0);
+        await downloadFile(url, zipPath, (pct) => onLog(`Downloading runtime… ${pct}%`, pct));
+        if (!(await zipLooksValid(zipPath))) throw new Error("downloaded archive is incomplete or corrupt");
+        onLog("Extracting runtime…");
+        await extractRuntime(zipPath, onLog);
+        fsp.rm(zipPath, { force: true }).catch(() => {});
+        lastError = null;
+        break;
+      } catch (e) {
+        lastError = String(e.message || e);
+        onLog(`Runtime setup problem: ${lastError}`);
+        fsp.rm(zipPath, { force: true }).catch(() => {});
+      }
+    }
+    if (lastError) throw new Error(lastError);
     cliCache = undefined;
     const found2 = await resolveCli();
     if (!found2) throw new Error("Runtime installed but audiocpp_cli did not run.");
@@ -656,8 +773,13 @@ module.exports = {
   audioCppRoot,
   binDir,
   modelDir,
+  modelsRoot,
   resolveCli,
   ensureRuntime,
+  latestRuntime,
+  zipLooksValid,
+  extractZipNode,
+  psQuote,
   packageFor,
   modelFilePath,
   modelInstalled,
